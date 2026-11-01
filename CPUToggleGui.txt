@@ -1,0 +1,234 @@
+-- CPU Toggle GUI (Roblox LocalScript)
+-- Put in StarterPlayer > StarterPlayerScripts
+-- CPU ON  = 3D rendering disabled (saves resources)
+-- CPU OFF = 3D rendering enabled (normal)
+
+local INVERT = false -- set to true if you want CPU ON to turn 3D rendering ON instead
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local old = playerGui:FindFirstChild("CPUToggleGui")
+if old then old:Destroy() end
+
+local W, H_OPEN, H_MIN = 230, 132, 38
+local ACCENT = Color3.fromRGB(120, 90, 255)
+local OFF_COL = Color3.fromRGB(55, 55, 70)
+
+local function tween(obj, t, props)
+	TweenService:Create(obj, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props):Play()
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "CPUToggleGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
+gui.Parent = playerGui
+
+-- Black overlay that covers the white screen when 3D rendering is off
+local overlayGui = Instance.new("ScreenGui")
+overlayGui.Name = "CPUToggleOverlay"
+overlayGui.ResetOnSpawn = false
+overlayGui.IgnoreGuiInset = true
+overlayGui.DisplayOrder = 998 -- below the control panel (999)
+overlayGui.Parent = playerGui
+
+local overlay = Instance.new("Frame")
+overlay.Size = UDim2.fromScale(1, 1)
+overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+overlay.BorderSizePixel = 0
+overlay.Visible = false
+overlay.Parent = overlayGui
+
+-- Main window (loads top right, a little in from the edge)
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.fromOffset(W, H_OPEN)
+main.Position = UDim2.new(1, -W - 28, 0, 70)
+main.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+main.BorderSizePixel = 0
+main.ClipsDescendants = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 14)
+
+local stroke = Instance.new("UIStroke", main)
+stroke.Color = ACCENT
+stroke.Thickness = 1.5
+stroke.Transparency = 0.35
+
+local grad = Instance.new("UIGradient", main)
+grad.Rotation = 90
+grad.Color = ColorSequence.new(Color3.fromRGB(30, 28, 44), Color3.fromRGB(16, 16, 22))
+
+-- Title bar (drag handle)
+local bar = Instance.new("Frame")
+bar.Name = "Bar"
+bar.Size = UDim2.new(1, 0, 0, H_MIN)
+bar.BackgroundTransparency = 1
+bar.Parent = main
+
+local dot = Instance.new("Frame")
+dot.Size = UDim2.fromOffset(8, 8)
+dot.Position = UDim2.new(0, 14, 0.5, -4)
+dot.BackgroundColor3 = ACCENT
+dot.BorderSizePixel = 0
+dot.Parent = bar
+Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -80, 1, 0)
+title.Position = UDim2.new(0, 30, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "PERFORMANCE"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 12
+title.TextColor3 = Color3.fromRGB(190, 185, 220)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = bar
+
+-- Minimize button (no X)
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.fromOffset(26, 22)
+minBtn.Position = UDim2.new(1, -36, 0.5, -11)
+minBtn.BackgroundColor3 = Color3.fromRGB(40, 38, 58)
+minBtn.AutoButtonColor = false
+minBtn.Text = "–"
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 16
+minBtn.TextColor3 = Color3.fromRGB(220, 215, 245)
+minBtn.Parent = bar
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 7)
+
+minBtn.MouseEnter:Connect(function() tween(minBtn, 0.15, {BackgroundColor3 = ACCENT}) end)
+minBtn.MouseLeave:Connect(function() tween(minBtn, 0.15, {BackgroundColor3 = Color3.fromRGB(40, 38, 58)}) end)
+
+-- Divider
+local line = Instance.new("Frame")
+line.Size = UDim2.new(1, -28, 0, 1)
+line.Position = UDim2.new(0, 14, 0, H_MIN)
+line.BackgroundColor3 = Color3.fromRGB(60, 56, 90)
+line.BorderSizePixel = 0
+line.Parent = main
+
+-- Body
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, 0, 0, H_OPEN - H_MIN)
+body.Position = UDim2.new(0, 0, 0, H_MIN)
+body.BackgroundTransparency = 1
+body.Parent = main
+
+local cpuLabel = Instance.new("TextLabel")
+cpuLabel.Size = UDim2.fromOffset(100, 26)
+cpuLabel.Position = UDim2.fromOffset(16, 16)
+cpuLabel.BackgroundTransparency = 1
+cpuLabel.Text = "CPU"
+cpuLabel.Font = Enum.Font.GothamBlack
+cpuLabel.TextSize = 22
+cpuLabel.TextColor3 = Color3.new(1, 1, 1)
+cpuLabel.TextXAlignment = Enum.TextXAlignment.Left
+cpuLabel.Parent = body
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -90, 0, 18)
+status.Position = UDim2.fromOffset(16, 50)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.Gotham
+status.TextSize = 12
+status.TextColor3 = Color3.fromRGB(150, 146, 180)
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = body
+
+-- Toggle switch
+local track = Instance.new("TextButton")
+track.Size = UDim2.fromOffset(52, 28)
+track.Position = UDim2.new(1, -68, 0, 18)
+track.BackgroundColor3 = OFF_COL
+track.AutoButtonColor = false
+track.Text = ""
+track.Parent = body
+Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+local knob = Instance.new("Frame")
+knob.Size = UDim2.fromOffset(22, 22)
+knob.Position = UDim2.fromOffset(3, 3)
+knob.BackgroundColor3 = Color3.new(1, 1, 1)
+knob.BorderSizePixel = 0
+knob.Parent = track
+Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+local hint = Instance.new("TextLabel")
+hint.Size = UDim2.new(1, -32, 0, 16)
+hint.Position = UDim2.fromOffset(16, 76)
+hint.BackgroundTransparency = 1
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 11
+hint.TextColor3 = Color3.fromRGB(100, 97, 130)
+hint.TextXAlignment = Enum.TextXAlignment.Left
+hint.Text = "Drag the top bar to move"
+hint.Parent = body
+
+-- Logic
+local cpuOn = false
+
+local function apply()
+	local renderOn = (cpuOn == INVERT) -- default: CPU ON => rendering OFF
+	pcall(function()
+		RunService:Set3dRenderingEnabled(renderOn)
+	end)
+	tween(track, 0.2, {BackgroundColor3 = cpuOn and ACCENT or OFF_COL})
+	tween(knob, 0.2, {Position = cpuOn and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3)})
+	overlay.Visible = not renderOn
+	status.Text = renderOn and "3D rendering: ON" or "3D rendering: OFF"
+	tween(dot, 0.2, {BackgroundColor3 = cpuOn and Color3.fromRGB(90, 230, 150) or ACCENT})
+end
+
+track.MouseButton1Click:Connect(function()
+	cpuOn = not cpuOn
+	apply()
+end)
+apply()
+
+-- Minimize
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	minBtn.Text = minimized and "+" or "–"
+	tween(main, 0.25, {Size = UDim2.fromOffset(W, minimized and H_MIN or H_OPEN)})
+end)
+
+-- Dragging (mouse + touch)
+local dragging, dragStart, startPos
+bar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = main.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = input.Position - dragStart
+		main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+			startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end
+end)
+
+-- Safety: restore rendering if the GUI is removed
+gui.Destroying:Connect(function()
+	overlayGui:Destroy()
+	pcall(function() RunService:Set3dRenderingEnabled(true) end)
+end)
