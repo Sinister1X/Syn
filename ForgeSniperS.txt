@@ -1,0 +1,846 @@
+local genv = (type(getgenv) == "function" and getgenv()) or _G
+if type(genv.ForgeSniper) == "table" and type(genv.ForgeSniper.Stop) == "function" then
+    pcall(genv.ForgeSniper.Stop)
+    task.wait(0.2)
+end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local LocalPlayer = Players.LocalPlayer
+
+local INSTANCE_ID = "HalloweenGames"
+local FORGE_PAD = Vector3.new(-5982.4, 13.7, -4036.0)
+local PAD_RADIUS = 30
+
+local alive = true
+local conns = {}
+local function track(c)
+    if c then conns[#conns + 1] = c end
+    return c
+end
+
+-- game modules need the game's thread identity
+local canSetIdentity = type(setthreadidentity) == "function"
+local execIdentity = 7
+if type(getthreadidentity) == "function" then
+    local ok, id = pcall(getthreadidentity)
+    if ok and type(id) == "number" then execIdentity = id end
+end
+local function gcall(fn, ...)
+    if type(fn) ~= "function" then return false, "not a function" end
+    if canSetIdentity then pcall(setthreadidentity, 2) end
+    local r = table.pack(pcall(fn, ...))
+    if canSetIdentity then pcall(setthreadidentity, execIdentity) end
+    return table.unpack(r, 1, r.n)
+end
+local function gval(fn, ...)
+    local ok, a = gcall(fn, ...)
+    if ok then return a end
+    return nil
+end
+
+local function notify(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", { Title = title, Text = text, Duration = 5 })
+    end)
+end
+
+local function req(path)
+    local ok, mod = gcall(function()
+        local node = RS
+        for seg in string.gmatch(path, "[^%.]+") do
+            node = node:WaitForChild(seg, 15)
+            if not node then error("missing " .. path) end
+        end
+        return require(node)
+    end)
+    return ok and mod or nil
+end
+
+local Forge = req("Library.Client.HalloweenGamesCmds.Forge")
+local ForgeUtil = req("Library.Util.HalloweenGamesForge")
+local Items = req("Library.Items")
+local PetCmds = req("Library.Client.PetCmds")
+local Instancing = req("Library.Client.InstancingCmds")
+
+if not (Forge and ForgeUtil and Items) then
+    notify("Forge Sniper", "Forge modules not found. Join the Halloween Games first.")
+    error("[ForgeSniper] forge modules missing")
+end
+
+local S = {
+    armed = false,
+    keepRolling = false,
+    useShards = true,
+    skipEquipped = false,
+    autoTp = true,
+    travel = "Teleport",
+    minHuge = 0,
+    minNormal = 0,
+    selected = {},
+    trigger = {},
+    targets = {},
+    rolls = 0,
+    wins = 0,
+    note = "idle",
+}
+local last, pending = {}, {}
+local busy = false
+local nextTry = 0
+
+local function isHuge(id)
+    return string.find(string.lower(tostring(id)), "huge", 1, true) ~= nil
+end
+
+local function inEvent()
+    if type(Instancing) ~= "table" or type(Instancing.GetInstanceID) ~= "function" then return true end
+    return gval(Instancing.GetInstanceID) == INSTANCE_ID
+end
+local function rootPart()
+    local c = LocalPlayer.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
+end
+local function atPad()
+    local r = rootPart()
+    return r ~= nil and (r.Position - FORGE_PAD).Magnitude <= PAD_RADIUS
+end
+local function gotoPad()
+    local c, r = LocalPlayer.Character, rootPart()
+    if not (c and r) then return false end
+    pcall(function() r.AssemblyLinearVelocity = Vector3.zero end)
+    return (pcall(function() c:PivotTo(CFrame.new(FORGE_PAD + Vector3.new(0, 3, 0))) end))
+end
+local function walkToPad()
+    local c, r = LocalPlayer.Character, rootPart()
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not (c and r and hum) then return false end
+    local t0, lastMove, lastPos = os.clock(), os.clock(), r.Position
+    while alive and os.clock() - t0 < 25 do
+        r = rootPart()
+        if not r then return false end
+        local flat = Vector3.new(r.Position.X - FORGE_PAD.X, 0, r.Position.Z - FORGE_PAD.Z).Magnitude
+        if flat <= 5 then return true end
+        hum:MoveTo(FORGE_PAD)
+        -- hop over small obstacles if we stop making progress
+        if (r.Position - lastPos).Magnitude > 1 then
+            lastPos, lastMove = r.Position, os.clock()
+        elseif os.clock() - lastMove > 1.2 then
+            hum.Jump = true
+            lastMove = os.clock()
+        end
+        task.wait(0.1)
+    end
+    return atPad()
+end
+local function goToPad()
+    if S.travel == "Walk" then
+        return walkToPad()
+    end
+    local ok = gotoPad()
+    task.wait(0.25)
+    return ok
+end
+
+-- forge stock / targets
+local function flag(name)
+    return gval(Forge.flag, name)
+end
+local function scanTargets(st)
+    local out = {}
+    local targets = type(ForgeUtil.TARGETS) == "table" and ForgeUtil.TARGETS or {}
+    for id, t in pairs(targets) do
+        local v = type(st) == "table" and st[id] or nil
+        local info = { id = id, open = false }
+        if type(v) == "table" and type(v.left) == "number" then
+            info.left = v.left
+        end
+        if type(v) == "table" and type(v.dial) == "number" then
+            info.dial = v.dial
+        end
+        if type(v) == "table" and flag(t.Enabled) == true and v.open and type(v.dial) == "number" and type(v.left) == "number" then
+            local hasLimit = type(v.limit) == "number" and v.limit >= 0
+            info.dial = v.dial
+            if v.left > 0 and not (hasLimit and (type(v.used) ~= "number" or v.used >= v.limit)) then
+                info.open = true
+            end
+        end
+        out[id] = info
+    end
+    return out
+end
+
+-- pets
+local function equippedSet()
+    local set = {}
+    if type(PetCmds) == "table" and type(PetCmds.GetEquippedItems) == "function" then
+        local ok, items = gcall(PetCmds.GetEquippedItems)
+        if ok and type(items) == "table" then
+            for _, it in pairs(items) do
+                if type(it) == "string" then
+                    set[it] = true
+                else
+                    local okU, uid = pcall(function() return it:GetUID() end)
+                    if okU and uid then set[uid] = true end
+                end
+            end
+        end
+    end
+    return set
+end
+
+local function collectPets(forDisplay)
+    local out = {}
+    local inputs = gval(ForgeUtil.Inputs, Forge.flag)
+    if type(inputs) ~= "table" then return out end
+    local ok, all = gcall(function() return Items.Pet:All() end)
+    if not (ok and type(all) == "table") then return out end
+    local equipped = (not forDisplay and S.skipEquipped) and equippedSet() or {}
+    for uid, item in pairs(all) do
+        local okI, id, amount, variant = pcall(function()
+            return item:GetId(), item:GetAmount(), (item:IsGolden() or item:IsRainbow() or item:IsShiny()) and 1 or 0
+        end)
+        if okI and inputs[id] and (amount or 0) > 0 and not equipped[uid] and (forDisplay or S.selected[id]) then
+            out[#out + 1] = { uid = uid, id = id, amount = amount, power = inputs[id], variant = variant, huge = isHuge(id) }
+        end
+    end
+    table.sort(out, function(a, b)
+        if a.power ~= b.power then return a.power < b.power end
+        if a.variant ~= b.variant then return a.variant < b.variant end
+        if a.amount ~= b.amount then return a.amount > b.amount end
+        return tostring(a.uid) < tostring(b.uid)
+    end)
+    return out
+end
+
+local function tryAdd(c, amount, ctx)
+    if amount <= 0 then return "skip" end
+    ctx.counts[c.id] = (ctx.counts[c.id] or 0) + amount
+    local ok, tbl = gcall(ForgeUtil.Table, Forge.flag, ctx.counts, ctx.shards, ctx.dials, ctx.closed)
+    local bad = not (ok and type(tbl) == "table")
+    if bad or tbl.overflow or #tbl.rows == 0 then
+        ctx.counts[c.id] -= amount
+        if ctx.counts[c.id] <= 0 then ctx.counts[c.id] = nil end
+        if bad then return "error" end
+        return #tbl.rows == 0 and "empty" or "overflow"
+    end
+    ctx.pets[c.uid] = (ctx.pets[c.uid] or 0) + amount
+    ctx.used += amount
+    if c.huge then ctx.huges += amount else ctx.normals += amount end
+    ctx.best = tbl
+    return tbl.capped and "capped" or "ok"
+end
+
+local function buildPlan(cands, targets)
+    local dials, closed = {}, {}
+    for id, info in pairs(targets) do
+        if info.open then dials[id] = info.dial else closed[id] = true end
+    end
+    local shards = 0
+    if S.useShards and type(Forge.Shards) == "function" and type(ForgeUtil.ShardCap) == "function" then
+        shards = math.min(gval(Forge.Shards) or 0, gval(ForgeUtil.ShardCap, Forge.flag) or 0)
+    end
+    local ctx = { counts = {}, pets = {}, used = 0, huges = 0, normals = 0, shards = shards, dials = dials, closed = closed }
+
+    -- first make sure the minimum huge / normal amounts are in
+    for _, c in ipairs(cands) do
+        local need = c.huge and (S.minHuge - ctx.huges) or (S.minNormal - ctx.normals)
+        if need > 0 then
+            local r = tryAdd(c, math.min(c.amount, need), ctx)
+            if r == "error" then return nil, "forge table error" end
+        end
+    end
+    -- then everything else that was selected
+    for _, c in ipairs(cands) do
+        local r = tryAdd(c, c.amount - (ctx.pets[c.uid] or 0), ctx)
+        if r == "error" then return nil, "forge table error" end
+        if r == "capped" then break end
+    end
+
+    if ctx.used == 0 or not ctx.best then return nil, "nothing to win with these pets (targets closed or pets too strong)" end
+    if ctx.huges < S.minHuge or ctx.normals < S.minNormal then
+        return nil, string.format("plan only fits %d huge / %d normal, need %d / %d", ctx.huges, ctx.normals, S.minHuge, S.minNormal)
+    end
+    return { pets = ctx.pets, shards = shards, total = ctx.best.total, used = ctx.used }
+end
+
+-- win chance for one target with all ticked pets, as if only that target were open
+S.chances = {}
+local function updateChances()
+    local targets = S.targets
+    local cands = collectPets(false)
+    local shards = 0
+    if S.useShards and type(Forge.Shards) == "function" and type(ForgeUtil.ShardCap) == "function" then
+        shards = math.min(gval(Forge.Shards) or 0, gval(ForgeUtil.ShardCap, Forge.flag) or 0)
+    end
+    for id, info in pairs(targets) do
+        local res
+        if #cands == 0 then
+            res = { text = "tick pets to see" }
+        elseif type(info.dial) ~= "number" then
+            res = { text = "n/a" }
+        else
+            local closed = {}
+            for other in pairs(targets) do
+                if other ~= id then closed[other] = true end
+            end
+            local ctx = { counts = {}, pets = {}, used = 0, huges = 0, normals = 0, shards = shards, dials = { [id] = info.dial }, closed = closed }
+            for _, c in ipairs(cands) do
+                local r = tryAdd(c, c.amount, ctx)
+                if r == "error" or r == "capped" then break end
+            end
+            if ctx.best then
+                res = { pct = ctx.best.total * 100, text = string.format("%.1f%%", ctx.best.total * 100) }
+            else
+                res = { text = "0% (pets too weak)" }
+            end
+        end
+        S.chances[id] = res
+    end
+end
+
+local function attempt()
+    local st = gval(Forge.State)
+    if type(st) ~= "table" then st = gval(Forge.Fetch) end
+    if type(st) ~= "table" then S.note = "forge state not loaded" return false end
+    local targets = scanTargets(st)
+    local cands = collectPets(false)
+    if #cands == 0 then S.note = "none of the ticked pets are in your inventory" return false end
+
+    local hugeHave, normalHave = 0, 0
+    for _, c in ipairs(cands) do
+        if c.huge then hugeHave += c.amount else normalHave += c.amount end
+    end
+    if hugeHave < S.minHuge or normalHave < S.minNormal then
+        S.note = string.format("need %d huge / %d normal, have %d / %d", S.minHuge, S.minNormal, hugeHave, normalHave)
+        return false
+    end
+
+    local plan, why = buildPlan(cands, targets)
+    if not plan then S.note = tostring(why) return false end
+
+    if S.autoTp and inEvent() and not atPad() then
+        S.note = S.travel == "Walk" and "walking to the forge" or "teleporting to the forge"
+        goToPad()
+    end
+
+    local ok, res = gcall(Forge.Roll, plan.pets, plan.shards)
+    S.rolls += 1
+    if ok and type(res) == "table" and res.ok then
+        if res.hit then
+            S.wins += 1
+            local what = tostring(res.result or res.target)
+            S.note = string.format("WON %s (%d pets, %.1f%%)", what, plan.used, plan.total * 100)
+            notify("Forge Sniper", "You forged " .. what .. "!")
+        else
+            S.note = string.format("missed (%.1f%%, %d pets used)", plan.total * 100, plan.used)
+        end
+        return true
+    end
+    S.note = "roll refused: " .. tostring(type(res) == "table" and res.msg or res)
+    return false
+end
+
+local function arm(on)
+    S.armed = on
+    table.clear(last)
+    table.clear(pending)
+    if on then
+        S.note = "armed, watching the forge"
+        if S.autoTp and inEvent() and not atPad() then task.spawn(goToPad) end
+    else
+        S.note = "stopped"
+    end
+end
+
+track(RunService.Heartbeat:Connect(function()
+    if not (alive and S.armed) then return end
+    local st = gval(Forge.State)
+    if type(st) ~= "table" then return end
+    local targets = scanTargets(st)
+    S.targets = targets
+    local fire = false
+    for id, info in pairs(targets) do
+        local prev = last[id]
+        if info.open and S.trigger[id] then
+            if not prev or not prev.open or (info.left or 0) > (prev.left or 0) then pending[id] = true end
+        else
+            pending[id] = nil
+        end
+        last[id] = { open = info.open, left = info.left }
+        if pending[id] then fire = true end
+    end
+    if fire and not busy and os.clock() >= nextTry then
+        busy = true
+        task.spawn(function()
+            local ok, fired = pcall(attempt)
+            if ok and fired then
+                nextTry = os.clock() + 1
+                if not S.keepRolling then table.clear(pending) end
+            else
+                if not ok then S.note = "error: " .. tostring(fired) end
+                nextTry = os.clock() + 0.25
+            end
+            busy = false
+        end)
+    end
+end))
+
+-- keep the cached forge state fresh
+task.spawn(function()
+    while alive do
+        if S.armed and type(Forge.Fetch) == "function" then gcall(Forge.Fetch) end
+        task.wait(0.4)
+    end
+end)
+
+----------------------------------------------------------------------
+-- GUI
+----------------------------------------------------------------------
+local C = {
+    bg = Color3.fromRGB(22, 22, 28),
+    card = Color3.fromRGB(32, 32, 40),
+    item = Color3.fromRGB(46, 46, 57),
+    off = Color3.fromRGB(72, 72, 85),
+    text = Color3.fromRGB(235, 235, 240),
+    dim = Color3.fromRGB(150, 150, 165),
+    accent = Color3.fromRGB(255, 140, 0),
+    good = Color3.fromRGB(80, 200, 120),
+    bad = Color3.fromRGB(225, 80, 80),
+    gold = Color3.fromRGB(255, 208, 0),
+}
+
+local function new(class, props, parent)
+    local inst = Instance.new(class)
+    if inst:IsA("GuiObject") then inst.BorderSizePixel = 0 end
+    for k, v in pairs(props) do inst[k] = v end
+    inst.Parent = parent
+    return inst
+end
+local function round(inst, r)
+    new("UICorner", { CornerRadius = UDim.new(0, r) }, inst)
+end
+local counters = setmetatable({}, { __mode = "k" })
+local function nxt(p)
+    counters[p] = (counters[p] or 0) + 1
+    return counters[p]
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "ForgeSniper"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 50
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+do
+    local parents = {}
+    if type(gethui) == "function" then parents[#parents + 1] = function() return gethui() end end
+    parents[#parents + 1] = function() return game:GetService("CoreGui") end
+    parents[#parents + 1] = function() return LocalPlayer:WaitForChild("PlayerGui") end
+    for _, get in ipairs(parents) do
+        local ok = pcall(function() gui.Parent = get() end)
+        if ok and gui.Parent then break end
+    end
+end
+
+local cam = workspace.CurrentCamera
+local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+local W = math.min(330, vp.X - 24)
+local H = math.min(480, vp.Y - 60)
+local TITLE_H = 42
+
+local win = new("Frame", {
+    Name = "Window",
+    Size = UDim2.fromOffset(W, H),
+    Position = UDim2.fromOffset(math.max(12, (vp.X - W) / 2), math.max(30, (vp.Y - H) / 2)),
+    BackgroundColor3 = C.bg,
+    Active = true,
+    ClipsDescendants = true,
+}, gui)
+round(win, 14)
+new("UIStroke", { Color = C.accent, Thickness = 1, Transparency = 0.55 }, win)
+
+local bar = new("Frame", { Size = UDim2.new(1, 0, 0, TITLE_H), BackgroundTransparency = 1, Active = true }, win)
+new("Frame", { Position = UDim2.new(0, 10, 1, -1), Size = UDim2.new(1, -20, 0, 1), BackgroundColor3 = C.item }, bar)
+local dot = new("Frame", { Position = UDim2.fromOffset(14, 16), Size = UDim2.fromOffset(10, 10), BackgroundColor3 = C.off }, bar)
+round(dot, 5)
+new("TextLabel", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(32, 0), Size = UDim2.new(1, -110, 1, 0),
+    Text = "Forge Sniper", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = C.text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, bar)
+
+local function barButton(text, xOff)
+    local b = new("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, xOff, 0.5, 0), Size = UDim2.fromOffset(30, 30),
+        BackgroundColor3 = C.item, Text = text, Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = C.text,
+    }, bar)
+    round(b, 8)
+    return b
+end
+local btnClose = barButton("×", -8)
+local btnMin = barButton("–", -44)
+
+local body = new("ScrollingFrame", {
+    Position = UDim2.fromOffset(0, TITLE_H + 2), Size = UDim2.new(1, 0, 1, -(TITLE_H + 2)),
+    BackgroundTransparency = 1, ScrollBarThickness = 3, ScrollBarImageColor3 = C.accent,
+    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+}, win)
+new("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, body)
+new("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12) }, body)
+
+local function card(title)
+    local f = new("Frame", {
+        BackgroundColor3 = C.card, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = nxt(body),
+    }, body)
+    round(f, 10)
+    new("UIPadding", { PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, f)
+    new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, f)
+    if title then
+        new("TextLabel", {
+            BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18), Text = string.upper(title),
+            Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = nxt(f),
+        }, f)
+    end
+    return f
+end
+
+local function label(parent, text, color, size)
+    return new("TextLabel", {
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        Text = text, Font = Enum.Font.Gotham, TextSize = size or 13, TextColor3 = color or C.text,
+        TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+        LayoutOrder = nxt(parent),
+    }, parent)
+end
+
+local function toggle(parent, text, default, cb)
+    local row = new("TextButton", {
+        Text = "", AutoButtonColor = false, BackgroundColor3 = C.item, Size = UDim2.new(1, 0, 0, 36),
+        LayoutOrder = nxt(parent),
+    }, parent)
+    round(row, 8)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -66, 1, 0),
+        Text = text, Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    local pill = new("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(40, 22),
+        BackgroundColor3 = C.off,
+    }, row)
+    round(pill, 11)
+    local knob = new("Frame", { Size = UDim2.fromOffset(16, 16), Position = UDim2.fromOffset(3, 3), BackgroundColor3 = Color3.new(1, 1, 1) }, pill)
+    round(knob, 8)
+    local on = default
+    local function paint()
+        pill.BackgroundColor3 = on and C.accent or C.off
+        knob.Position = on and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3)
+    end
+    paint()
+    row.Activated:Connect(function()
+        on = not on
+        paint()
+        cb(on)
+    end)
+end
+
+local function numberBox(parent, text, default, cb)
+    local row = new("Frame", { BackgroundColor3 = C.item, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = nxt(parent) }, parent)
+    round(row, 8)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -84, 1, 0),
+        Text = text, Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    local box = new("TextBox", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.fromOffset(64, 28),
+        BackgroundColor3 = C.bg, Text = tostring(default), PlaceholderText = "0", ClearTextOnFocus = false,
+        Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.text,
+    }, row)
+    round(box, 7)
+    box.FocusLost:Connect(function()
+        local n = math.floor(tonumber(box.Text) or 0)
+        if n < 0 then n = 0 end
+        box.Text = tostring(n)
+        cb(n)
+    end)
+end
+
+local function segmented(parent, text, options, default, cb)
+    local wrap = new("Frame", { BackgroundColor3 = C.item, Size = UDim2.new(1, 0, 0, 68), LayoutOrder = nxt(parent) }, parent)
+    round(wrap, 8)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 4), Size = UDim2.new(1, -20, 0, 22),
+        Text = text, Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+    }, wrap)
+    local track_ = new("Frame", { Position = UDim2.fromOffset(8, 28), Size = UDim2.new(1, -16, 0, 32), BackgroundColor3 = C.bg }, wrap)
+    round(track_, 8)
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, track_)
+    new("UIPadding", { PaddingTop = UDim.new(0, 3), PaddingBottom = UDim.new(0, 3), PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3) }, track_)
+    local n = #options
+    local btns = {}
+    local current = default
+    local function paint()
+        for name, b in pairs(btns) do
+            b.BackgroundColor3 = name == current and C.accent or C.bg
+            b.TextColor3 = name == current and Color3.new(1, 1, 1) or C.dim
+        end
+    end
+    for i, name in ipairs(options) do
+        local b = new("TextButton", {
+            Size = UDim2.new(1 / n, -4 * (n - 1) / n, 1, 0), Text = name, Font = Enum.Font.GothamBold, TextSize = 13,
+            BackgroundColor3 = C.bg, TextColor3 = C.dim, AutoButtonColor = false, LayoutOrder = i,
+        }, track_)
+        round(b, 6)
+        b.Activated:Connect(function()
+            current = name
+            paint()
+            cb(name)
+        end)
+        btns[name] = b
+    end
+    paint()
+end
+
+local function buttonRow(parent, defs)
+    local row = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 38), LayoutOrder = nxt(parent) }, parent)
+    new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, row)
+    local n = #defs
+    local made = {}
+    for i, d in ipairs(defs) do
+        local b = new("TextButton", {
+            Size = UDim2.new(1 / n, -6 * (n - 1) / n, 1, 0), BackgroundColor3 = d.color or C.item,
+            Text = d.text, Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.text, LayoutOrder = i,
+        }, row)
+        round(b, 8)
+        b.Activated:Connect(d.cb)
+        made[i] = b
+    end
+    return made
+end
+
+-- status
+local cStatus = card("Status")
+local lblState = label(cStatus, "Sniper off", C.text, 15)
+lblState.Font = Enum.Font.GothamBold
+local lblStock = label(cStatus, "Stock: -", C.dim)
+local lblNote = label(cStatus, "idle", C.text)
+local lblStats = label(cStatus, "Rolls: 0 | Wins: 0", C.dim)
+local armBtn = buttonRow(cStatus, { { text = "Start Sniper", color = C.accent, cb = function() end } })[1]
+armBtn.Activated:Connect(function() arm(not S.armed) end)
+
+-- pets
+local cPets = card("Pets to forge")
+buttonRow(cPets, {
+    { text = "Select all", cb = function() for id, r in pairs(S.rows or {}) do if r.frame.Visible then S.selected[id] = true r.paint() end end end },
+    { text = "Clear", cb = function() for id, r in pairs(S.rows or {}) do S.selected[id] = nil r.paint() end end },
+    { text = "Refresh", cb = function() S.refresh() end },
+})
+local listFrame = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = nxt(cPets) }, cPets)
+new("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }, listFrame)
+local lblEmpty = new("TextLabel", {
+    BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 28), Text = "No forgeable pets found", Font = Enum.Font.Gotham,
+    TextSize = 13, TextColor3 = C.dim, LayoutOrder = 9999,
+}, listFrame)
+
+S.rows = {}
+local function petRow(id, huge)
+    local row = new("TextButton", { Text = "", AutoButtonColor = false, BackgroundColor3 = C.item, Size = UDim2.new(1, 0, 0, 36) }, listFrame)
+    round(row, 8)
+    local box = new("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(20, 20), BackgroundColor3 = C.off }, row)
+    round(box, 6)
+    local tick = new("TextLabel", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Text = "✓", Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = Color3.new(1, 1, 1), Visible = false }, box)
+    new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(36, 0), Size = UDim2.new(1, -96, 1, 0), Text = tostring(id),
+        Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = huge and C.gold or C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+    }, row)
+    local count = new("TextLabel", {
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 0), Size = UDim2.fromOffset(52, 36), BackgroundTransparency = 1,
+        Text = "x0", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Right,
+    }, row)
+    local function paint()
+        local on = S.selected[id] == true
+        box.BackgroundColor3 = on and C.accent or C.off
+        tick.Visible = on
+    end
+    paint()
+    row.Activated:Connect(function()
+        S.selected[id] = not S.selected[id] or nil
+        paint()
+    end)
+    return { frame = row, paint = paint, setCount = function(n) count.Text = "x" .. tostring(n) end }
+end
+
+function S.refresh()
+    local list = collectPets(true)
+    local groups, ids = {}, {}
+    for _, c in ipairs(list) do
+        local g = groups[c.id]
+        if not g then
+            g = { id = c.id, amount = 0, huge = c.huge }
+            groups[c.id] = g
+            ids[#ids + 1] = c.id
+        end
+        g.amount += c.amount
+    end
+    table.sort(ids, function(a, b)
+        local ha, hb = groups[a].huge, groups[b].huge
+        if ha ~= hb then return ha end
+        return tostring(a) < tostring(b)
+    end)
+    for i, id in ipairs(ids) do
+        local g = groups[id]
+        if not S.rows[id] then S.rows[id] = petRow(id, g.huge) end
+        local r = S.rows[id]
+        r.setCount(g.amount)
+        r.frame.LayoutOrder = i
+        r.frame.Visible = true
+    end
+    for id, r in pairs(S.rows) do
+        if not groups[id] then r.frame.Visible = false end
+    end
+    lblEmpty.Visible = #ids == 0
+end
+
+-- which stock to snipe
+local cTrig = card("Snipe when in stock")
+do
+    local ids = {}
+    for id in pairs(type(ForgeUtil.TARGETS) == "table" and ForgeUtil.TARGETS or {}) do ids[#ids + 1] = id end
+    table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+    if #ids == 0 then
+        label(cTrig, "No forge targets found", C.dim)
+    end
+    for _, id in ipairs(ids) do
+        local default = not isHuge(id)
+        S.trigger[id] = default
+        toggle(cTrig, tostring(id), default, function(v) S.trigger[id] = v end)
+    end
+    if #ids > 0 then
+        label(cTrig, "Titanic and Gargantuan are on by default. Turn Huge on to snipe it too.", C.dim, 12)
+    end
+end
+
+-- requirements
+local cReq = card("Only forge when you have")
+numberBox(cReq, "Huge pets (min)", 0, function(n) S.minHuge = n end)
+numberBox(cReq, "Normal pets (min)", 0, function(n) S.minNormal = n end)
+label(cReq, "Counted from the pets you ticked above. If you have less, it waits.", C.dim, 12)
+
+-- options
+local cOpt = card("Options")
+toggle(cOpt, "Keep rolling while in stock", false, function(v) S.keepRolling = v end)
+toggle(cOpt, "Use Spirit Shards", true, function(v) S.useShards = v end)
+toggle(cOpt, "Skip equipped pets", false, function(v) S.skipEquipped = v end)
+toggle(cOpt, "Auto go to Forge", true, function(v) S.autoTp = v end)
+segmented(cOpt, "Travel to the Forge by", { "Teleport", "Walk" }, S.travel, function(v) S.travel = v end)
+label(cOpt, "Walk is slower and can get stuck. Stand at the Forge before sniping for the fastest roll.", C.dim, 12)
+
+-- actions
+local cAct = card("Actions")
+buttonRow(cAct, {
+    { text = "Forge Now", color = C.accent, cb = function()
+        if busy then return end
+        busy = true
+        task.spawn(function()
+            local ok, err = pcall(attempt)
+            if not ok then S.note = "error: " .. tostring(err) end
+            busy = false
+        end)
+    end },
+    { text = "Go To Forge", cb = function() if inEvent() then task.spawn(goToPad) end end },
+})
+
+-- window controls
+local minimized = false
+btnMin.Activated:Connect(function()
+    minimized = not minimized
+    body.Visible = not minimized
+    win.Size = minimized and UDim2.fromOffset(W, TITLE_H) or UDim2.fromOffset(W, H)
+    btnMin.Text = minimized and "+" or "–"
+end)
+
+local dragging, dragStart, startPos
+track(bar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = win.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end))
+track(UIS.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        local d = input.Position - dragStart
+        local v = workspace.CurrentCamera.ViewportSize
+        local x = math.clamp(startPos.X.Offset + d.X, 0, math.max(0, v.X - win.AbsoluteSize.X))
+        local y = math.clamp(startPos.Y.Offset + d.Y, 0, math.max(0, v.Y - TITLE_H))
+        win.Position = UDim2.fromOffset(x, y)
+    end
+end))
+
+local function stop()
+    if not alive then return end
+    alive = false
+    S.armed = false
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    conns = {}
+    pcall(function() gui:Destroy() end)
+    genv.ForgeSniper = nil
+end
+btnClose.Activated:Connect(stop)
+
+-- ui refresh
+task.spawn(function()
+    local tick = 0
+    while alive do
+        if not S.armed then
+            local st = gval(Forge.State)
+            if type(st) == "table" then S.targets = scanTargets(st) end
+        end
+        if tick % 12 == 0 then pcall(S.refresh) end
+        if tick % 4 == 0 and not busy then pcall(updateChances) end
+        tick += 1
+
+        lblState.Text = S.armed and "ARMED, waiting for stock" or "Sniper off"
+        lblState.TextColor3 = S.armed and C.good or C.text
+        dot.BackgroundColor3 = S.armed and C.good or C.off
+        armBtn.Text = S.armed and "Stop Sniper" or "Start Sniper"
+        armBtn.BackgroundColor3 = S.armed and C.bad or C.accent
+
+        local ids = {}
+        for id in pairs(S.targets) do ids[#ids + 1] = id end
+        table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+        local lines = {}
+        for _, id in ipairs(ids) do
+            local info = S.targets[id]
+            local txt
+            if info.open then txt = tostring(info.left) .. " left"
+            elseif info.left == 0 then txt = "sold out"
+            else txt = "closed" end
+            local ch = S.chances[id]
+            lines[#lines + 1] = (S.trigger[id] and "● " or "○ ") .. tostring(id) .. ": " .. txt
+                .. "\n     chance: " .. (ch and ch.text or "...")
+        end
+        lblStock.Text = #lines > 0 and table.concat(lines, "\n") or "Stock: -"
+        lblNote.Text = S.note
+        lblStats.Text = string.format("Rolls: %d | Wins: %d", S.rolls, S.wins)
+        task.wait(0.25)
+    end
+end)
+
+genv.ForgeSniper = { Stop = stop, State = S }
+pcall(S.refresh)
+notify("Forge Sniper", "Loaded. Tick your pets and press Start Sniper.")
