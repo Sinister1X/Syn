@@ -2,6 +2,7 @@
 -- Two modes: Hop Sniper (scans, then hops servers) and AFK Sniper (stays put and buys the moment
 -- something matching your price caps gets listed). Each mode has its own rules. Settings are saved.
 
+local K = {} -- groups constants into one local (the script had too many top-level locals)
 local genv = (type(getgenv) == "function" and getgenv()) or _G
 local replaced = false
 for _, key in ipairs({ "MalemXSniper", "BoothSniper" }) do
@@ -14,18 +15,18 @@ end
 if replaced then task.wait(0.2) end
 
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
+K.RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
-local UIS = game:GetService("UserInputService")
+K.UIS = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 
-local PLAZA = 15502339080 -- Trading Plaza (where booths are)
-local API = "https://ps99.biggamesapi.io/api/collection/"
-local CONFIG_FILE = "MalemXSniper_config.json"
-local OLD_CONFIG_FILE = "BoothSniper_config.json"
+K.PLAZA = 15502339080 -- Trading Plaza (where booths are)
+K.API = "https://ps99.biggamesapi.io/api/collection/"
+K.CONFIG_FILE = "MalemXSniper_config.json"
+K.OLD_CONFIG_FILE = "BoothSniper_config.json"
 
 local alive = true
 local conns = {}
@@ -34,13 +35,13 @@ local function track(c) conns[#conns + 1] = c; return c end
 local requestFn = (type(syn) == "table" and syn.request) or http_request or request
 
 ---------------------------------------------------------------- config (saved to a file)
-local EXTRA_KEYS = { "Huge", "Titanic", "Gargantuan", "Exclusive", "Any" }
-local EXTRA_TITLES = { Huge = "All Huges", Titanic = "All Titanics", Gargantuan = "All Gargantuans",
+K.EXTRA_KEYS = { "Huge", "Titanic", "Gargantuan", "Exclusive", "Any" }
+K.EXTRA_TITLES = { Huge = "All Huges", Titanic = "All Titanics", Gargantuan = "All Gargantuans",
 	Exclusive = "All Exclusive Pets", Any = "Any Item" }
 
 local function newProfile()
 	local p = { items = {}, custom = {}, extras = {} }
-	for _, key in ipairs(EXTRA_KEYS) do p.extras[key] = { Enabled = false } end
+	for _, key in ipairs(K.EXTRA_KEYS) do p.extras[key] = { Enabled = false } end
 	return p
 end
 
@@ -55,7 +56,7 @@ local function readProfile(dst, src)
 	if type(src.items) == "table" then dst.items = src.items end
 	if type(src.custom) == "table" then dst.custom = src.custom end
 	if type(src.extras) == "table" then
-		for _, key in ipairs(EXTRA_KEYS) do
+		for _, key in ipairs(K.EXTRA_KEYS) do
 			if type(src.extras[key]) == "table" then dst.extras[key] = src.extras[key] end
 		end
 	end
@@ -64,10 +65,10 @@ end
 local function loadConfig()
 	if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
 	pcall(function()
-		local file = CONFIG_FILE
+		local file = K.CONFIG_FILE
 		if not isfile(file) then
-			if not isfile(OLD_CONFIG_FILE) then return end
-			file = OLD_CONFIG_FILE
+			if not isfile(K.OLD_CONFIG_FILE) then return end
+			file = K.OLD_CONFIG_FILE
 		end
 		local data = HttpService:JSONDecode(readfile(file))
 		if type(data) ~= "table" then return end
@@ -91,7 +92,7 @@ local function saveConfig()
 	saveQueued = true
 	task.delay(0.4, function()
 		saveQueued = false
-		pcall(writefile, CONFIG_FILE, HttpService:JSONEncode(cfg))
+		pcall(writefile, K.CONFIG_FILE, HttpService:JSONEncode(cfg))
 		if onConfigSaved then pcall(onConfigSaved) end
 	end)
 end
@@ -107,11 +108,11 @@ local function parseNum(s)
 	return tonumber(num) * (mult[suf:lower()] or 1)
 end
 
-local UNITS = { { 1e12, "t" }, { 1e9, "b" }, { 1e6, "m" }, { 1e3, "k" } }
+K.UNITS = { { 1e12, "t" }, { 1e9, "b" }, { 1e6, "m" }, { 1e3, "k" } }
 local function fmt(n)
 	n = tonumber(n) or 0
 	local a = math.abs(n)
-	for _, u in ipairs(UNITS) do
+	for _, u in ipairs(K.UNITS) do
 		if a >= u[1] then
 			local s = string.format("%.2f", n / u[1]):gsub("%.?0+$", "")
 			return s .. u[2]
@@ -121,20 +122,20 @@ local function fmt(n)
 end
 
 ---------------------------------------------------------------- tiered items (Coins IV, Strong Pets V ...)
-local ROMAN = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X" }
-local ROMAN_VALUE = {}
-for i, r in ipairs(ROMAN) do ROMAN_VALUE[r] = i end
-local TIER_MAX = { Enchant = 5, Potion = 10 }
+K.ROMAN = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X" }
+K.ROMAN_VALUE = {}
+for i, r in ipairs(K.ROMAN) do K.ROMAN_VALUE[r] = i end
+K.TIER_MAX = { Enchant = 5, Potion = 10 }
 
 -- "Coins IV" -> "Coins", 4.  Names without a numeral come back unchanged.
 local function splitTier(name)
 	local base, numeral = name:match("^(.-)%s+([IVXivx]+)$")
-	if base and base ~= "" and ROMAN_VALUE[numeral:upper()] then return base, ROMAN_VALUE[numeral:upper()] end
+	if base and base ~= "" and K.ROMAN_VALUE[numeral:upper()] then return base, K.ROMAN_VALUE[numeral:upper()] end
 	return name, nil
 end
 
 local function expandTiers(class, list)
-	local out, max = {}, TIER_MAX[class]
+	local out, max = {}, K.TIER_MAX[class]
 	for _, n in ipairs(list) do
 		if max then
 			for t = 1, max do out[#out + 1] = { label = n .. " " .. ROMAN[t], name = n, tier = t } end
@@ -147,7 +148,7 @@ end
 
 local function itemTitle(r)
 	local name = tostring(r.Item)
-	if TIER_MAX[r.Class] and r.Tier and ROMAN[r.Tier] then name = name .. " " .. ROMAN[r.Tier] end
+	if K.TIER_MAX[r.Class] and r.Tier and K.ROMAN[r.Tier] then name = name .. " " .. ROMAN[r.Tier] end
 	return string.format("%s  ·  %s", name, tostring(r.Class))
 end
 
@@ -164,7 +165,7 @@ local function hasActiveRules(pname)
 	local function live(r) return r.Enabled ~= false and (r.MaxPrice ~= nil or r.Profit ~= nil) end
 	for _, r in ipairs(prof.items) do if live(r) then return true end end
 	for _, r in ipairs(prof.custom) do if live(r) then return true end end
-	for _, key in ipairs(EXTRA_KEYS) do
+	for _, key in ipairs(K.EXTRA_KEYS) do
 		if prof.extras[key] and live(prof.extras[key]) then return true end
 	end
 	return false
@@ -185,7 +186,7 @@ local function splitList(s)
 	return t
 end
 
-local EXTRA_MATCH = {
+K.EXTRA_MATCH = {
 	Gargantuan = function(c) return c.class == "Pet" and c.garg end,
 	Titanic = function(c) return c.class == "Pet" and c.titanic end,
 	Huge = function(c) return c.class == "Pet" and c.huge end,
@@ -206,11 +207,11 @@ local function rebuild()
 				table.insert(byClassName[cl][nm], r)
 			end
 		end
-		for _, key in ipairs(EXTRA_KEYS) do
+		for _, key in ipairs(K.EXTRA_KEYS) do
 			local r = prof.extras[key]
 			if r then
 				blCache[r] = splitList(r.Blacklist)
-				table.insert(extrasList, { match = EXTRA_MATCH[key], rule = r })
+				table.insert(extrasList, { match = K.EXTRA_MATCH[key], rule = r })
 			end
 		end
 		for _, r in ipairs(prof.custom) do
@@ -229,22 +230,22 @@ rebuild()
 ---------------------------------------------------------------- saved configs
 -- Named snapshots of every setting and rule. The running state (hop / AFK on or off) is never part
 -- of a snapshot, so loading a config or auto loading after a server hop can't stop a running sniper.
-local STORE_FILE = "MalemXSniper_configs.json"
-local CAN_SAVE = type(writefile) == "function"
+K.STORE_FILE = "MalemXSniper_configs.json"
+K.CAN_SAVE = type(writefile) == "function"
 local store = { configs = {}, autoLoad = nil, active = nil, autoSave = false }
 
 local function deepCopy(t) return HttpService:JSONDecode(HttpService:JSONEncode(t)) end
 
 local function writeStore()
-	if not CAN_SAVE then return end
-	pcall(writefile, STORE_FILE, HttpService:JSONEncode(store))
+	if not K.CAN_SAVE then return end
+	pcall(writefile, K.STORE_FILE, HttpService:JSONEncode(store))
 end
 
 local function loadStore()
 	if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
 	pcall(function()
-		if not isfile(STORE_FILE) then return end
-		local data = HttpService:JSONDecode(readfile(STORE_FILE))
+		if not isfile(K.STORE_FILE) then return end
+		local data = HttpService:JSONDecode(readfile(K.STORE_FILE))
 		if type(data) ~= "table" then return end
 		if type(data.configs) == "table" then
 			for name, c in pairs(data.configs) do
@@ -388,7 +389,7 @@ local function idleStatus()
 end
 
 local Purchase, CurrencyCmds
-local CALLER = { Caller = {
+K.CALLER = { Caller = {
 	LineNumber = 527, ScriptClass = "ModuleScript", Variadic = false,
 	Traceback = "ReplicatedStorage.Library.Client.BoothCmds:527 function PromptPurchase2\nReplicatedStorage.Library.Client.BoothCmds:654 function promptOtherPlayerBooth2\nReplicatedStorage.Library.Client.BoothCmds:157",
 	ScriptPath = "ReplicatedStorage.Library.Client.BoothCmds", FunctionName = "PromptPurchase2",
@@ -399,9 +400,9 @@ local CALLER = { Caller = {
 local getState
 local function bindGame()
 	local ok = pcall(function()
-		Purchase = RS:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase", 10)
-		CurrencyCmds = require(RS.Library.Client.CurrencyCmds)
-		local mod = RS.Library.Client:WaitForChild("BoothCmds", 10)
+		Purchase = K.RS:WaitForChild("Network"):WaitForChild("Booths_RequestPurchase", 10)
+		CurrencyCmds = require(K.RS.Library.Client.CurrencyCmds)
+		local mod = K.RS.Library.Client:WaitForChild("BoothCmds", 10)
 		getState = getsenv(mod).getState
 	end)
 	return ok and Purchase ~= nil and getState ~= nil
@@ -452,7 +453,7 @@ local function runJob(job)
 	while job.ready and workspace:GetServerTimeNow() < job.ready do RunService.Heartbeat:Wait() end
 	local ok = false
 	for _ = 1, math.max(cfg.retries, 1) do
-		local s, res = pcall(function() return Purchase:InvokeServer(job.uid, { [job.key] = job.qty }, CALLER) end)
+		local s, res = pcall(function() return Purchase:InvokeServer(job.uid, { [job.key] = job.qty }, K.CALLER) end)
 		if s and res then ok = true; break end
 		RunService.Heartbeat:Wait()
 	end
@@ -555,11 +556,11 @@ local function hopServer()
 			end
 		end
 		if #pool == 0 then
-			pcall(TeleportService.Teleport, TeleportService, PLAZA, LocalPlayer)
+			pcall(TeleportService.Teleport, TeleportService, K.PLAZA, LocalPlayer)
 		else
 			local id = pool[math.random(1, #pool)]
 			task.delay(4, function() failedServers[id] = true; hopping = false end) -- stuck? try another
-			pcall(TeleportService.TeleportToPlaceInstance, TeleportService, PLAZA, id, LocalPlayer)
+			pcall(TeleportService.TeleportToPlaceInstance, TeleportService, K.PLAZA, id, LocalPlayer)
 		end
 	end)
 end
@@ -572,7 +573,7 @@ local function testSay(text)
 	testSink(text)
 end
 
-local BUY_RANGE = 30 -- studs; further than this and the test button teleports first
+K.BUY_RANGE = 30 -- studs; further than this and the test button teleports first
 
 local function boothModel(uid)
 	local things = workspace:FindFirstChild("__THINGS")
@@ -635,7 +636,7 @@ local function testBuyNearest()
 			local c = getInfo(best.listing)
 			local name = c.ok and c.name or "an item"
 			testSay(string.format("Nearest: %s's booth, %d studs away. %s for %s gems.", best.owner, math.floor(best.dist), name, fmt(best.cost)))
-			if best.dist > BUY_RANGE then
+			if best.dist > K.BUY_RANGE then
 				testSay("Out of range, teleporting...")
 				if not gotoBooth(best.uid) then testSay("Teleport failed, trying the buy anyway.") end
 				task.wait(math.max(cfg.tpDelay, 0.15))
@@ -647,7 +648,7 @@ local function testBuyNearest()
 				waited += RunService.Heartbeat:Wait()
 			end
 			for attempt = 1, math.max(cfg.retries, 1) do
-				local s, res = pcall(function() return Purchase:InvokeServer(best.uid, { [best.key] = 1 }, CALLER) end)
+				local s, res = pcall(function() return Purchase:InvokeServer(best.uid, { [best.key] = 1 }, K.CALLER) end)
 				testSay(string.format("Attempt %d: call %s, server said %s", attempt, s and "went through" or "errored", tostring(res)))
 				if s and res then
 					stats.bought += 1
@@ -702,19 +703,19 @@ local function testListNearby()
 end
 
 ---------------------------------------------------------------- item catalog from the PS99 API
-local CLASS_COLLECTION = { Pet = "Pets", Egg = "Eggs", Enchant = "Enchants", Charm = "Charms", Potion = "Potions",
+K.CLASS_COLLECTION = { Pet = "Pets", Egg = "Eggs", Enchant = "Enchants", Charm = "Charms", Potion = "Potions",
 	Ultimate = "Ultimates", Hoverboard = "Hoverboards", Lootbox = "Lootboxes", Box = "Boxes", Seed = "Seeds",
 	Fruit = "Fruits", Booth = "Booths", Card = "CardItems", Misc = "MiscItems" }
-local CLASS_ORDER = { "Pet", "Egg", "Enchant", "Charm", "Potion", "Ultimate", "Hoverboard", "Lootbox", "Box",
+K.CLASS_ORDER = { "Pet", "Egg", "Enchant", "Charm", "Potion", "Ultimate", "Hoverboard", "Lootbox", "Box",
 	"Seed", "Fruit", "Misc", "Booth", "Card", "Consumable" }
 local catalog = {}
 
 local function loadCatalog(class, cb)
 	if catalog[class] then cb(catalog[class]); return end
-	local coll = CLASS_COLLECTION[class]
+	local coll = K.CLASS_COLLECTION[class]
 	if not coll then catalog[class] = {}; cb({}); return end
 	task.spawn(function()
-		local ok, data = pcall(function() return HttpService:JSONDecode(game:HttpGet(API .. coll)) end)
+		local ok, data = pcall(function() return HttpService:JSONDecode(game:HttpGet(K.API .. coll)) end)
 		local names = {}
 		if ok and type(data) == "table" and type(data.data) == "table" then
 			for _, e in ipairs(data.data) do
@@ -730,19 +731,19 @@ end
 
 ---------------------------------------------------------------- GUI
 local W, H = 430, 246
-local HEAD = 32
-local SIDE_W = 92
+K.HEAD = 32
+K.SIDE_W = 92
 
-local BG = Color3.fromRGB(13, 10, 11)
-local BODY = Color3.fromRGB(19, 13, 15)
-local PANEL = Color3.fromRGB(26, 17, 20)
-local PANEL2 = Color3.fromRGB(42, 26, 30)
-local ACCENT = Color3.fromRGB(214, 36, 52)
-local ACCENT_DK = Color3.fromRGB(112, 20, 30)
-local ACCENT2 = Color3.fromRGB(255, 120, 98)
-local LIGHT = Color3.fromRGB(244, 236, 236)
-local DIM = Color3.fromRGB(168, 142, 146)
-local WHITE = Color3.new(1, 1, 1)
+K.BG = Color3.fromRGB(13, 10, 11)
+K.BODY = Color3.fromRGB(19, 13, 15)
+K.PANEL = Color3.fromRGB(26, 17, 20)
+K.PANEL2 = Color3.fromRGB(42, 26, 30)
+K.ACCENT = Color3.fromRGB(214, 36, 52)
+K.ACCENT_DK = Color3.fromRGB(112, 20, 30)
+K.ACCENT2 = Color3.fromRGB(255, 120, 98)
+K.LIGHT = Color3.fromRGB(244, 236, 236)
+K.DIM = Color3.fromRGB(168, 142, 146)
+K.WHITE = Color3.new(1, 1, 1)
 local info = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 local gui = Instance.new("ScreenGui")
@@ -764,7 +765,7 @@ local function corner(o, r) return mk("UICorner", { CornerRadius = UDim.new(0, r
 local order = 0
 local function nextOrder() order += 1; return order end
 local function txt(parent, str, size, color, font, align, props)
-	local p = { BackgroundTransparency = 1, Text = str, TextSize = size, TextColor3 = color or LIGHT,
+	local p = { BackgroundTransparency = 1, Text = str, TextSize = size, TextColor3 = color or K.LIGHT,
 		Font = font or Enum.Font.Gotham, TextXAlignment = align or Enum.TextXAlignment.Left,
 		Size = UDim2.new(1, 0, 0, size + 6) }
 	for k, v in pairs(props or {}) do p[k] = v end
@@ -774,12 +775,12 @@ end
 -- the window sits in an outer holder so dragging never has to account for the UIScale
 local holder = mk("Frame", { Name = "Window", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
 	Size = UDim2.fromOffset(W, H), BackgroundTransparency = 1 }, gui)
-local main = mk("Frame", { Size = UDim2.fromOffset(W, H), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, holder)
+local main = mk("Frame", { Size = UDim2.fromOffset(W, H), BackgroundColor3 = K.WHITE, BorderSizePixel = 0 }, holder)
 corner(main, 14)
 mk("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(34, 15, 18), Color3.fromRGB(11, 9, 10)), Rotation = 90 }, main)
-local mainStroke = mk("UIStroke", { Color = WHITE, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, main)
+local mainStroke = mk("UIStroke", { Color = K.WHITE, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, main)
 local strokeGrad = mk("UIGradient", { Color = ColorSequence.new({
-	ColorSequenceKeypoint.new(0, ACCENT), ColorSequenceKeypoint.new(0.5, ACCENT_DK), ColorSequenceKeypoint.new(1, ACCENT) }) }, mainStroke)
+	ColorSequenceKeypoint.new(0, K.ACCENT), ColorSequenceKeypoint.new(0.5, K.ACCENT_DK), ColorSequenceKeypoint.new(1, K.ACCENT) }) }, mainStroke)
 
 local scaleObj = mk("UIScale", {}, main)
 local function screenSize()
@@ -822,7 +823,7 @@ local function makeDraggable(handle, target, onTap)
 			end)
 		end
 	end)
-	track(UIS.InputChanged:Connect(function(input)
+	track(K.UIS.InputChanged:Connect(function(input)
 		if not dragging then return end
 		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then return end
 		local d = input.Position - dragStart
@@ -835,53 +836,53 @@ local function makeDraggable(handle, target, onTap)
 end
 
 -- header
-local head = mk("Frame", { Size = UDim2.new(1, 0, 0, HEAD), BackgroundTransparency = 1 }, main)
-local dot = mk("Frame", { Size = UDim2.fromOffset(8, 8), Position = UDim2.fromOffset(14, 12), BackgroundColor3 = ACCENT, BorderSizePixel = 0 }, head)
+local head = mk("Frame", { Size = UDim2.new(1, 0, 0, K.HEAD), BackgroundTransparency = 1 }, main)
+local dot = mk("Frame", { Size = UDim2.fromOffset(8, 8), Position = UDim2.fromOffset(14, 12), BackgroundColor3 = K.ACCENT, BorderSizePixel = 0 }, head)
 corner(dot, 4)
-txt(head, "MalemX Sniper", 14, LIGHT, Enum.Font.GothamBold, nil, { Position = UDim2.fromOffset(28, 0), Size = UDim2.new(0, 118, 1, 0) })
-local headSub = txt(head, "Idle", 11, DIM, nil, Enum.TextXAlignment.Right, { Position = UDim2.fromOffset(150, 0),
+txt(head, "MalemX Sniper", 14, K.LIGHT, Enum.Font.GothamBold, nil, { Position = UDim2.fromOffset(28, 0), Size = UDim2.new(0, 118, 1, 0) })
+local headSub = txt(head, "Idle", 11, K.DIM, nil, Enum.TextXAlignment.Right, { Position = UDim2.fromOffset(150, 0),
 	Size = UDim2.new(1, -196, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd })
-local minBtn = mk("TextButton", { Text = "-", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = LIGHT, BackgroundColor3 = PANEL2,
+local minBtn = mk("TextButton", { Text = "-", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = K.LIGHT, BackgroundColor3 = K.PANEL2,
 	BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.fromOffset(26, 22), Position = UDim2.new(1, -36, 0, 5) }, head)
 corner(minBtn, 8)
-mk("Frame", { Size = UDim2.new(1, -24, 0, 1), Position = UDim2.fromOffset(12, HEAD), BackgroundColor3 = PANEL2, BorderSizePixel = 0 }, main)
+mk("Frame", { Size = UDim2.new(1, -24, 0, 1), Position = UDim2.fromOffset(12, K.HEAD), BackgroundColor3 = K.PANEL2, BorderSizePixel = 0 }, main)
 makeDraggable(head, holder)
 
 -- body: tab sidebar on the left, pages on the right
-local body = mk("Frame", { Position = UDim2.fromOffset(8, HEAD + 6), Size = UDim2.new(1, -16, 1, -(HEAD + 14)), BackgroundTransparency = 1 }, main)
-local side = mk("Frame", { Size = UDim2.new(0, SIDE_W, 1, 0), BackgroundColor3 = PANEL, BorderSizePixel = 0 }, body)
+local body = mk("Frame", { Position = UDim2.fromOffset(8, K.HEAD + 6), Size = UDim2.new(1, -16, 1, -(K.HEAD + 14)), BackgroundTransparency = 1 }, main)
+local side = mk("Frame", { Size = UDim2.new(0, K.SIDE_W, 1, 0), BackgroundColor3 = K.PANEL, BorderSizePixel = 0 }, body)
 corner(side, 10)
 local tabList = mk("Frame", { Size = UDim2.new(1, 0, 1, -22), BackgroundTransparency = 1 }, side)
 mk("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, tabList)
 mk("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder }, tabList)
-txt(side, "MalemX", 10, DIM, Enum.Font.GothamMedium, Enum.TextXAlignment.Center, { Position = UDim2.new(0, 0, 1, -20), Size = UDim2.new(1, 0, 0, 16) })
+txt(side, "MalemX", 10, K.DIM, Enum.Font.GothamMedium, Enum.TextXAlignment.Center, { Position = UDim2.new(0, 0, 1, -20), Size = UDim2.new(1, 0, 0, 16) })
 
-local content = mk("Frame", { Position = UDim2.fromOffset(SIDE_W + 8, 0), Size = UDim2.new(1, -(SIDE_W + 8), 1, 0),
-	BackgroundColor3 = BODY, BorderSizePixel = 0 }, body)
+local content = mk("Frame", { Position = UDim2.fromOffset(K.SIDE_W + 8, 0), Size = UDim2.new(1, -(K.SIDE_W + 8), 1, 0),
+	BackgroundColor3 = K.BODY, BorderSizePixel = 0 }, body)
 corner(content, 10)
-mk("UIStroke", { Color = PANEL2, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, content)
+mk("UIStroke", { Color = K.PANEL2, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, content)
 
 local pages, tabBtns = {}, {}
-local TAB_NAMES = { "Hop Sniper", "AFK Sniper", "Configs", "Setup", "Test" }
+K.TAB_NAMES = { "Hop Sniper", "AFK Sniper", "Configs", "Setup", "Test" }
 local function newPage()
 	local p = mk("ScrollingFrame", { Position = UDim2.fromOffset(6, 6), Size = UDim2.new(1, -12, 1, -12), BackgroundTransparency = 1,
-		BorderSizePixel = 0, ScrollBarThickness = 2, ScrollBarImageColor3 = ACCENT, CanvasSize = UDim2.new(),
+		BorderSizePixel = 0, ScrollBarThickness = 2, ScrollBarImageColor3 = K.ACCENT, CanvasSize = UDim2.new(),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false }, content)
 	mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, p)
 	mk("UIPadding", { PaddingRight = UDim.new(0, 5) }, p)
 	return p
 end
-local currentTab = TAB_NAMES[1]
+local currentTab = K.TAB_NAMES[1]
 local function showTab(name)
 	currentTab = name
 	for n, p in pairs(pages) do p.Visible = (n == name) end
 	for n, b in pairs(tabBtns) do
-		TweenService:Create(b, info, { BackgroundColor3 = n == name and ACCENT or PANEL2, TextColor3 = n == name and WHITE or DIM }):Play()
+		TweenService:Create(b, info, { BackgroundColor3 = n == name and K.ACCENT or K.PANEL2, TextColor3 = n == name and K.WHITE or K.DIM }):Play()
 	end
 end
-for i, n in ipairs(TAB_NAMES) do
+for i, n in ipairs(K.TAB_NAMES) do
 	pages[n] = newPage()
-	local b = mk("TextButton", { Text = n, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = DIM, BackgroundColor3 = PANEL2,
+	local b = mk("TextButton", { Text = n, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.DIM, BackgroundColor3 = K.PANEL2,
 		BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = i }, tabList)
 	corner(b, 8)
 	tabBtns[n] = b
@@ -890,49 +891,49 @@ end
 
 -- generic widgets
 local function row(parent, h)
-	local f = mk("Frame", { Size = UDim2.new(1, 0, 0, h or 34), BackgroundColor3 = PANEL2, BorderSizePixel = 0, LayoutOrder = nextOrder() }, parent)
+	local f = mk("Frame", { Size = UDim2.new(1, 0, 0, h or 34), BackgroundColor3 = K.PANEL2, BorderSizePixel = 0, LayoutOrder = nextOrder() }, parent)
 	corner(f, 8)
 	return f
 end
 local function switch(parent, getOn, onChange)
 	local trackBtn = mk("TextButton", { Text = "", AutoButtonColor = false, Size = UDim2.fromOffset(34, 18),
-		Position = UDim2.new(1, -42, 0.5, -9), BackgroundColor3 = getOn() and ACCENT or BG, BorderSizePixel = 0 }, parent)
+		Position = UDim2.new(1, -42, 0.5, -9), BackgroundColor3 = getOn() and K.ACCENT or K.BG, BorderSizePixel = 0 }, parent)
 	corner(trackBtn, 9)
 	local knob = mk("Frame", { Size = UDim2.fromOffset(12, 12), Position = getOn() and UDim2.fromOffset(19, 3) or UDim2.fromOffset(3, 3),
-		BackgroundColor3 = WHITE, BorderSizePixel = 0 }, trackBtn)
+		BackgroundColor3 = K.WHITE, BorderSizePixel = 0 }, trackBtn)
 	corner(knob, 6)
 	trackBtn.MouseButton1Click:Connect(function()
 		local on = not getOn()
-		TweenService:Create(trackBtn, info, { BackgroundColor3 = on and ACCENT or BG }):Play()
+		TweenService:Create(trackBtn, info, { BackgroundColor3 = on and K.ACCENT or K.BG }):Play()
 		TweenService:Create(knob, info, { Position = on and UDim2.fromOffset(19, 3) or UDim2.fromOffset(3, 3) }):Play()
 		onChange(on)
 	end)
 end
 local function toggleRow(parent, title, sub, getOn, onChange)
 	local r = row(parent, sub and 40 or 34)
-	txt(r, title, 12, LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, sub and 4 or 8), Size = UDim2.new(1, -62, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
-	if sub then txt(r, sub, 10, DIM, nil, nil, { Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -62, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd }) end
+	txt(r, title, 12, K.LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, sub and 4 or 8), Size = UDim2.new(1, -62, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
+	if sub then txt(r, sub, 10, K.DIM, nil, nil, { Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -62, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd }) end
 	switch(r, getOn, onChange)
 end
 local function inputBox(parent, w, text, placeholder)
-	local b = mk("TextBox", { Size = UDim2.fromOffset(w, 22), Position = UDim2.new(1, -w - 8, 0.5, -11), BackgroundColor3 = BG,
-		BorderSizePixel = 0, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = LIGHT, PlaceholderText = placeholder or "",
-		PlaceholderColor3 = DIM, ClearTextOnFocus = false, Text = text or "", TextTruncate = Enum.TextTruncate.AtEnd }, parent)
+	local b = mk("TextBox", { Size = UDim2.fromOffset(w, 22), Position = UDim2.new(1, -w - 8, 0.5, -11), BackgroundColor3 = K.BG,
+		BorderSizePixel = 0, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.LIGHT, PlaceholderText = placeholder or "",
+		PlaceholderColor3 = K.DIM, ClearTextOnFocus = false, Text = text or "", TextTruncate = Enum.TextTruncate.AtEnd }, parent)
 	corner(b, 6)
 	return b
 end
 local function inputRow(parent, title, text, placeholder, commit, w)
 	local r = row(parent, 34)
-	txt(r, title, 12, LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 8), Size = UDim2.new(0.5, -10, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
+	txt(r, title, 12, K.LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 8), Size = UDim2.new(0.5, -10, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
 	local b = inputBox(r, w or 90, text, placeholder)
 	b.FocusLost:Connect(function() commit(b.Text, b) end)
 	return b
 end
 local function cycleRow(parent, title, options, getIdx, onChange)
 	local r = row(parent, 34)
-	txt(r, title, 12, LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 8), Size = UDim2.new(0.5, -10, 0, 16) })
-	local b = mk("TextButton", { Size = UDim2.fromOffset(90, 22), Position = UDim2.new(1, -98, 0.5, -11), BackgroundColor3 = BG,
-		BorderSizePixel = 0, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = ACCENT2, AutoButtonColor = true,
+	txt(r, title, 12, K.LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 8), Size = UDim2.new(0.5, -10, 0, 16) })
+	local b = mk("TextButton", { Size = UDim2.fromOffset(90, 22), Position = UDim2.new(1, -98, 0.5, -11), BackgroundColor3 = K.BG,
+		BorderSizePixel = 0, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.ACCENT2, AutoButtonColor = true,
 		Text = options[getIdx()] }, r)
 	corner(b, 6)
 	b.MouseButton1Click:Connect(function()
@@ -943,8 +944,8 @@ local function cycleRow(parent, title, options, getIdx, onChange)
 	return b
 end
 local function button(parent, text, cb, color, h)
-	local b = mk("TextButton", { Text = text, Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE,
-		BackgroundColor3 = color or ACCENT, BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.new(1, 0, 0, h or 32),
+	local b = mk("TextButton", { Text = text, Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = K.WHITE,
+		BackgroundColor3 = color or K.ACCENT, BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.new(1, 0, 0, h or 32),
 		LayoutOrder = nextOrder() }, parent)
 	corner(b, 8)
 	b.MouseButton1Click:Connect(cb)
@@ -961,17 +962,17 @@ local function holderFrame(parent)
 	return h
 end
 local function sectionLabel(parent, text)
-	return txt(parent, text, 10, ACCENT2, Enum.Font.GothamBold, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14) })
+	return txt(parent, text, 10, K.ACCENT2, Enum.Font.GothamBold, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14) })
 end
 local function note(parent, text, h)
-	return txt(parent, text, 10, DIM, nil, nil, { LayoutOrder = nextOrder(), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top,
+	return txt(parent, text, 10, K.DIM, nil, nil, { LayoutOrder = nextOrder(), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top,
 		Size = UDim2.new(1, 0, 0, h or 28) })
 end
 
 -- rule summary text
 local function summary(r)
 	local parts = {}
-	if r.Tier ~= nil and not (r.Item and TIER_MAX[r.Class]) then parts[#parts + 1] = "tier " .. tostring(r.Tier) end
+	if r.Tier ~= nil and not (r.Item and K.TIER_MAX[r.Class]) then parts[#parts + 1] = "tier " .. tostring(r.Tier) end
 	if r.Shiny ~= nil then parts[#parts + 1] = r.Shiny and "shiny" or "non-shiny" end
 	if r.MaxPrice then parts[#parts + 1] = "max " .. fmt(r.MaxPrice) end
 	if r.Profit then parts[#parts + 1] = r.Profit .. "% off RAP" end
@@ -981,15 +982,15 @@ end
 
 ---------------------------------------------------------------- overlay (editor / picker)
 -- fully opaque panel over the content area, so nothing underneath can be touched or looks greyed out
-local overlay = mk("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = BODY, BorderSizePixel = 0, Visible = false,
+local overlay = mk("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = K.BODY, BorderSizePixel = 0, Visible = false,
 	ZIndex = 20, Active = true }, content)
 corner(overlay, 10)
-local overlayTitle = txt(overlay, "", 13, LIGHT, Enum.Font.GothamBold, nil, { Position = UDim2.fromOffset(12, 4), Size = UDim2.new(1, -88, 0, 24), TextTruncate = Enum.TextTruncate.AtEnd })
-local backBtn = mk("TextButton", { Text = "< Back", Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = LIGHT, BackgroundColor3 = PANEL2,
+local overlayTitle = txt(overlay, "", 13, K.LIGHT, Enum.Font.GothamBold, nil, { Position = UDim2.fromOffset(12, 4), Size = UDim2.new(1, -88, 0, 24), TextTruncate = Enum.TextTruncate.AtEnd })
+local backBtn = mk("TextButton", { Text = "< Back", Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.LIGHT, BackgroundColor3 = K.PANEL2,
 	BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.fromOffset(60, 22), Position = UDim2.new(1, -68, 0, 5) }, overlay)
 corner(backBtn, 7)
 local sheet = mk("ScrollingFrame", { Position = UDim2.fromOffset(6, 34), Size = UDim2.new(1, -12, 1, -40), BackgroundTransparency = 1,
-	BorderSizePixel = 0, ScrollBarThickness = 2, ScrollBarImageColor3 = ACCENT, CanvasSize = UDim2.new(),
+	BorderSizePixel = 0, ScrollBarThickness = 2, ScrollBarImageColor3 = K.ACCENT, CanvasSize = UDim2.new(),
 	AutomaticCanvasSize = Enum.AutomaticSize.Y }, overlay)
 mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, sheet)
 mk("UIPadding", { PaddingRight = UDim.new(0, 5) }, sheet)
@@ -1005,15 +1006,15 @@ end
 
 -- small labelled input cells used by the editor
 local function fieldCell(parent, label)
-	local f = mk("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundColor3 = PANEL2, BorderSizePixel = 0, LayoutOrder = nextOrder() }, parent)
+	local f = mk("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundColor3 = K.PANEL2, BorderSizePixel = 0, LayoutOrder = nextOrder() }, parent)
 	corner(f, 8)
-	txt(f, label, 10, DIM, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(9, 3), Size = UDim2.new(1, -18, 0, 12), TextTruncate = Enum.TextTruncate.AtEnd })
+	txt(f, label, 10, K.DIM, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(9, 3), Size = UDim2.new(1, -18, 0, 12), TextTruncate = Enum.TextTruncate.AtEnd })
 	return f
 end
 local function fieldBox(parent, label, text, placeholder)
 	local f = fieldCell(parent, label)
-	local b = mk("TextBox", { Position = UDim2.fromOffset(6, 18), Size = UDim2.new(1, -12, 0, 22), BackgroundColor3 = BG, BorderSizePixel = 0,
-		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = LIGHT, PlaceholderText = placeholder or "", PlaceholderColor3 = DIM,
+	local b = mk("TextBox", { Position = UDim2.fromOffset(6, 18), Size = UDim2.new(1, -12, 0, 22), BackgroundColor3 = K.BG, BorderSizePixel = 0,
+		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = K.LIGHT, PlaceholderText = placeholder or "", PlaceholderColor3 = K.DIM,
 		ClearTextOnFocus = false, Text = text or "", TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, f)
 	corner(b, 6)
 	mk("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }, b)
@@ -1022,8 +1023,8 @@ end
 local function fieldCycle(parent, label, options, startIdx, onChange)
 	local f = fieldCell(parent, label)
 	local idx = startIdx
-	local b = mk("TextButton", { Position = UDim2.fromOffset(6, 18), Size = UDim2.new(1, -12, 0, 22), BackgroundColor3 = BG, BorderSizePixel = 0,
-		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = ACCENT2, AutoButtonColor = true, Text = options[idx] }, f)
+	local b = mk("TextButton", { Position = UDim2.fromOffset(6, 18), Size = UDim2.new(1, -12, 0, 22), BackgroundColor3 = K.BG, BorderSizePixel = 0,
+		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = K.ACCENT2, AutoButtonColor = true, Text = options[idx] }, f)
 	corner(b, 6)
 	b.MouseButton1Click:Connect(function()
 		idx = idx % #options + 1
@@ -1039,7 +1040,7 @@ local function gridFrame(parent, cell, pad)
 end
 
 local renderAll
-local SHINY_OPTS = { "Any", "Shiny only", "Non-shiny" }
+K.SHINY_OPTS = { "Any", "Shiny only", "Non-shiny" }
 local function shinyIdx(v) if v == nil then return 1 elseif v then return 2 else return 3 end end
 
 -- editor for one rule. kind: "item" | "extra" | "custom"
@@ -1052,14 +1053,14 @@ local function openEditor(pname, rule, kind, isNew, title)
 	local grid = gridFrame(sheet, UDim2.new(0.5, -3, 0, 44))
 	local tierBox = fieldBox(grid, "Tier (pets 0-2, I-V = 1-5)", rule.Tier ~= nil and tostring(rule.Tier) or "", "any")
 	local shinySel = shinyIdx(rule.Shiny)
-	fieldCycle(grid, "Shiny (pets)", SHINY_OPTS, shinySel, function(i) shinySel = i end)
+	fieldCycle(grid, "Shiny (pets)", K.SHINY_OPTS, shinySel, function(i) shinySel = i end)
 	local priceBox = fieldBox(grid, "Max price each", rule.MaxPrice and fmt(rule.MaxPrice) or "", "e.g. 10k")
 	local profitBox = fieldBox(grid, "Or % below RAP", rule.Profit and tostring(rule.Profit) or "", "none")
 	local blBox
 	if kind ~= "item" then
 		blBox = fieldBox(sheet, "Skip these names (comma separated)", rule.Blacklist or "", "name, name")
 	end
-	local msg = txt(sheet, "", 11, ACCENT2, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14) })
+	local msg = txt(sheet, "", 11, K.ACCENT2, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14) })
 
 	local actions = gridFrame(sheet, UDim2.new(1 / 3, -4, 0, 30), 6)
 	button(actions, "Save", function()
@@ -1083,7 +1084,7 @@ local function openEditor(pname, rule, kind, isNew, title)
 		end
 		rebuild(); saveConfig(); renderAll()
 		closeOverlay()
-	end, ACCENT, 30)
+	end, K.ACCENT, 30)
 	if not isNew and kind ~= "extra" then
 		button(actions, "Delete", function()
 			local prof = cfg.rules[pname]
@@ -1091,9 +1092,9 @@ local function openEditor(pname, rule, kind, isNew, title)
 			for i, r in ipairs(list) do if r == rule then table.remove(list, i); break end end
 			rebuild(); saveConfig(); renderAll()
 			closeOverlay()
-		end, ACCENT_DK, 30)
+		end, K.ACCENT_DK, 30)
 	end
-	button(actions, "Cancel", closeOverlay, PANEL2, 30)
+	button(actions, "Cancel", closeOverlay, K.PANEL2, 30)
 end
 
 -- item picker: choose a category, search the item list, tap to configure
@@ -1104,8 +1105,8 @@ local function openPicker(pname)
 		LayoutOrder = nextOrder() }, sheet)
 	mk("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder,
 		VerticalAlignment = Enum.VerticalAlignment.Center }, chips)
-	local search = mk("TextBox", { Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = PANEL2, BorderSizePixel = 0, Font = Enum.Font.Gotham,
-		TextSize = 12, TextColor3 = LIGHT, PlaceholderText = "Search items...", PlaceholderColor3 = DIM, ClearTextOnFocus = false,
+	local search = mk("TextBox", { Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = K.PANEL2, BorderSizePixel = 0, Font = Enum.Font.Gotham,
+		TextSize = 12, TextColor3 = K.LIGHT, PlaceholderText = "Search items...", PlaceholderColor3 = K.DIM, ClearTextOnFocus = false,
 		Text = "", TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = nextOrder() }, sheet)
 	corner(search, 8)
 	mk("UIPadding", { PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }, search)
@@ -1127,14 +1128,14 @@ local function openPicker(pname)
 				local base, tier = search.Text, nil
 				if current ~= "Pet" then base, tier = splitTier(search.Text) end
 				choose(current, base, tier)
-			end, PANEL2, 28)
-			custom.TextColor3 = ACCENT2
+			end, K.PANEL2, 28)
+			custom.TextColor3 = K.ACCENT2
 			custom.TextSize = 11
 		end
 		for _, e in ipairs(names) do
 			if q == "" or e.label:lower():find(q, 1, true) then
 				shown += 1
-				local b = button(list, e.label, function() choose(current, e.name, e.tier) end, PANEL2, 28)
+				local b = button(list, e.label, function() choose(current, e.name, e.tier) end, K.PANEL2, 28)
 				b.TextXAlignment = Enum.TextXAlignment.Left
 				b.Font = Enum.Font.Gotham
 				b.TextSize = 12
@@ -1142,15 +1143,15 @@ local function openPicker(pname)
 				if shown >= 60 then break end
 			end
 		end
-		if shown == 0 and q == "" then txt(list, "Loading...", 11, DIM, nil, nil, { LayoutOrder = nextOrder() }) end
+		if shown == 0 and q == "" then txt(list, "Loading...", 11, K.DIM, nil, nil, { LayoutOrder = nextOrder() }) end
 	end
 
 	local chipBtns = {}
 	local function pick(class)
 		current = class
 		for n, b in pairs(chipBtns) do
-			b.BackgroundColor3 = n == class and ACCENT or PANEL2
-			b.TextColor3 = n == class and WHITE or DIM
+			b.BackgroundColor3 = n == class and K.ACCENT or K.PANEL2
+			b.TextColor3 = n == class and K.WHITE or K.DIM
 		end
 		names = {}
 		refresh()
@@ -1158,8 +1159,8 @@ local function openPicker(pname)
 			if current == class and list.Parent then names = expandTiers(class, got); refresh() end
 		end)
 	end
-	for _, class in ipairs(CLASS_ORDER) do
-		local b = mk("TextButton", { Text = class, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = DIM, BackgroundColor3 = PANEL2,
+	for _, class in ipairs(K.CLASS_ORDER) do
+		local b = mk("TextButton", { Text = class, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.DIM, BackgroundColor3 = K.PANEL2,
 			BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X,
 			LayoutOrder = nextOrder() }, chips)
 		corner(b, 7)
@@ -1174,8 +1175,8 @@ end
 local function openClassChooser(pname)
 	openSheet("Custom rule: pick a class")
 	local grid = gridFrame(sheet, UDim2.new(0.25, -5, 0, 28), 6)
-	for _, class in ipairs(CLASS_ORDER) do
-		local b = mk("TextButton", { Text = class, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = LIGHT, BackgroundColor3 = PANEL2,
+	for _, class in ipairs(K.CLASS_ORDER) do
+		local b = mk("TextButton", { Text = class, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.LIGHT, BackgroundColor3 = K.PANEL2,
 			BorderSizePixel = 0, LayoutOrder = nextOrder() }, grid)
 		corner(b, 8)
 		b.MouseButton1Click:Connect(function()
@@ -1194,8 +1195,8 @@ end
 
 local function ruleCard(parent, rule, kind, pname, title)
 	local r = row(parent, 40)
-	txt(r, title, 12, LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 4), Size = UDim2.new(1, -62, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
-	txt(r, summary(rule), 10, DIM, nil, nil, { Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -62, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
+	txt(r, title, 12, K.LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 4), Size = UDim2.new(1, -62, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
+	txt(r, summary(rule), 10, K.DIM, nil, nil, { Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -62, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
 	local tap = mk("TextButton", { Text = "", BackgroundTransparency = 1, Size = UDim2.new(1, -52, 1, 0) }, r)
 	switch(r, function() return rule.Enabled ~= false end, function(on) rule.Enabled = on; rebuild(); saveConfig() end)
 	tap.MouseButton1Click:Connect(function() openEditor(pname, rule, kind, false, title) end)
@@ -1205,21 +1206,21 @@ local function buildRules(page, pname)
 	sectionLabel(page, "QUICK PRICE CAPS")
 	local extrasBox = holderFrame(page)
 	sectionLabel(page, "SPECIFIC ITEMS")
-	button(page, "+  Add item", function() openPicker(pname) end, ACCENT, 30)
+	button(page, "+  Add item", function() openPicker(pname) end, K.ACCENT, 30)
 	local itemsBox = holderFrame(page)
 	sectionLabel(page, "CUSTOM CLASS RULES")
-	button(page, "+  Custom class rule", function() openClassChooser(pname) end, PANEL2, 28)
+	button(page, "+  Custom class rule", function() openClassChooser(pname) end, K.PANEL2, 28)
 	local customBox = holderFrame(page)
 
 	renderers[pname] = function()
 		local prof = cfg.rules[pname]
 		clear(extrasBox)
-		for _, key in ipairs(EXTRA_KEYS) do
-			ruleCard(extrasBox, prof.extras[key], "extra", pname, EXTRA_TITLES[key])
+		for _, key in ipairs(K.EXTRA_KEYS) do
+			ruleCard(extrasBox, prof.extras[key], "extra", pname, K.EXTRA_TITLES[key])
 		end
 		clear(itemsBox)
 		if #prof.items == 0 then
-			txt(itemsBox, "No items yet. Tap \"Add item\" to pick one.", 10, DIM, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 16) })
+			txt(itemsBox, "No items yet. Tap \"Add item\" to pick one.", 10, K.DIM, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 16) })
 		end
 		for _, r in ipairs(prof.items) do
 			ruleCard(itemsBox, r, "item", pname, itemTitle(r))
@@ -1235,9 +1236,9 @@ end
 local statViews = {}
 local function statCard(page)
 	local card = row(page, 76)
-	local left = txt(card, "", 11, LIGHT, nil, nil, { Position = UDim2.fromOffset(10, 6), Size = UDim2.new(0.5, -10, 0, 44), TextYAlignment = Enum.TextYAlignment.Top })
-	local right = txt(card, "", 11, LIGHT, nil, nil, { Position = UDim2.new(0.5, 0, 0, 6), Size = UDim2.new(0.5, -10, 0, 44), TextYAlignment = Enum.TextYAlignment.Top })
-	local last = txt(card, "", 10, DIM, nil, nil, { Position = UDim2.fromOffset(10, 54), Size = UDim2.new(1, -20, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
+	local left = txt(card, "", 11, K.LIGHT, nil, nil, { Position = UDim2.fromOffset(10, 6), Size = UDim2.new(0.5, -10, 0, 44), TextYAlignment = Enum.TextYAlignment.Top })
+	local right = txt(card, "", 11, K.LIGHT, nil, nil, { Position = UDim2.new(0.5, 0, 0, 6), Size = UDim2.new(0.5, -10, 0, 44), TextYAlignment = Enum.TextYAlignment.Top })
+	local last = txt(card, "", 10, K.DIM, nil, nil, { Position = UDim2.fromOffset(10, 54), Size = UDim2.new(1, -20, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
 	left.LineHeight, right.LineHeight = 1.15, 1.15
 	statViews[#statViews + 1] = function()
 		left.Text = string.format("Gems  %s\nScanned  %d\nMatches  %d", fmt(stats.diamonds), stats.scanned, stats.matches)
@@ -1251,7 +1252,7 @@ local function masterButton(page, mode)
 	return button(page, "", function()
 		local active = (mode == "hop" and cfg.hopOn) or (mode == "afk" and cfg.afkOn)
 		setMode(not active and mode or nil)
-	end, ACCENT, 34)
+	end, K.ACCENT, 34)
 end
 
 -- HOP SNIPER
@@ -1269,10 +1270,10 @@ statCard(afkPage)
 
 -- SETUP
 local setupPage = pages["Setup"]
-local SCAN_OPTS = { "Every frame", "0.002s", "0.01s", "0.05s", "0.1s", "0.25s" }
-local SCAN_VALUES = { 0, 0.002, 0.01, 0.05, 0.1, 0.25 }
+K.SCAN_OPTS = { "Every frame", "0.002s", "0.01s", "0.05s", "0.1s", "0.25s" }
+K.SCAN_VALUES = { 0, 0.002, 0.01, 0.05, 0.1, 0.25 }
 local function scanIdx()
-	for i, v in ipairs(SCAN_VALUES) do if v == cfg.scanInterval then return i end end
+	for i, v in ipairs(K.SCAN_VALUES) do if v == cfg.scanInterval then return i end end
 	return 1
 end
 numCommit = function(key, lo, hi, isMoney)
@@ -1300,7 +1301,7 @@ local function buildSettings()
 	inputRow(setupPage, "Gems to keep", fmt(cfg.minGems), "0", numCommit("minGems", 0, 1e15, true), 84)
 	inputRow(setupPage, "Max per buy", fmt(cfg.maxPerBuy), "any", numCommit("maxPerBuy", 1, 1e9, true), 84)
 	inputRow(setupPage, "Buy attempts", tostring(cfg.retries), "3", numCommit("retries", 1, 10), 60)
-	cycleRow(setupPage, "Scan speed", SCAN_OPTS, scanIdx, function(i) cfg.scanInterval = SCAN_VALUES[i]; saveConfig() end)
+	cycleRow(setupPage, "Scan speed", K.SCAN_OPTS, scanIdx, function(i) cfg.scanInterval = K.SCAN_VALUES[i]; saveConfig() end)
 	sectionLabel(setupPage, "TELEPORT")
 	toggleRow(setupPage, "Teleport to booth", "Go to the seller before buying", function() return cfg.teleport end, function(v) cfg.teleport = v; saveConfig() end)
 	inputRow(setupPage, "Teleport delay (s)", tostring(cfg.tpDelay), "0.05", numCommit("tpDelay", 0, 2), 60)
@@ -1313,8 +1314,8 @@ local function buildSettings()
 	button(setupPage, "Reset all rules", function()
 		cfg.rules.hop, cfg.rules.afk = newProfile(), newProfile()
 		rebuild(); saveConfig(); renderAll()
-	end, ACCENT_DK, 30)
-	button(setupPage, "Unload script", stop, PANEL, 30)
+	end, K.ACCENT_DK, 30)
+	button(setupPage, "Unload script", stop, K.PANEL, 30)
 end
 buildSettings()
 
@@ -1329,20 +1330,20 @@ local autoBtn, refreshConfigs
 
 sectionLabel(cfgPage, "SAVE CURRENT SETUP")
 local createRow = row(cfgPage, 34)
-local nameBox = mk("TextBox", { Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -92, 0, 22), BackgroundColor3 = BG, BorderSizePixel = 0,
-	Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = LIGHT, PlaceholderText = "Config name", PlaceholderColor3 = DIM,
+local nameBox = mk("TextBox", { Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -92, 0, 22), BackgroundColor3 = K.BG, BorderSizePixel = 0,
+	Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = K.LIGHT, PlaceholderText = "Config name", PlaceholderColor3 = K.DIM,
 	ClearTextOnFocus = false, Text = "", TextXAlignment = Enum.TextXAlignment.Left }, createRow)
 corner(nameBox, 6)
 mk("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7) }, nameBox)
-local saveNew = mk("TextButton", { Text = "Save new", Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = WHITE, BackgroundColor3 = ACCENT,
+local saveNew = mk("TextButton", { Text = "Save new", Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = K.WHITE, BackgroundColor3 = K.ACCENT,
 	BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.fromOffset(70, 22), Position = UDim2.new(1, -78, 0, 6) }, createRow)
 corner(saveNew, 6)
-local cfgMsg = txt(cfgPage, CAN_SAVE and "" or "This executor can't write files, configs last until you leave.", 10, ACCENT2, nil, nil,
+local cfgMsg = txt(cfgPage, K.CAN_SAVE and "" or "This executor can't write files, configs last until you leave.", 10, K.ACCENT2, nil, nil,
 	{ LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
 local function say(text) cfgMsg.Text = text end
 
 sectionLabel(cfgPage, "SAVED CONFIGS")
-local cfgStatus = txt(cfgPage, "", 10, DIM, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
+local cfgStatus = txt(cfgPage, "", 10, K.DIM, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd })
 local listBox = holderFrame(cfgPage)
 local actions = gridFrame(cfgPage, UDim2.new(1 / 3, -4, 0, 30), 6)
 
@@ -1379,16 +1380,16 @@ button(actions, "Load", function()
 	store.active = selectedName
 	saveConfig(); writeStore(); renderAll(); buildSettings(); refreshConfigs()
 	say('Loaded "' .. selectedName .. '".')
-end, ACCENT, 30)
+end, K.ACCENT, 30)
 
-confirmButton("Overwrite", PANEL2, function()
+confirmButton("Overwrite", K.PANEL2, function()
 	store.configs[selectedName] = snapshot()
 	store.active = selectedName
 	writeStore(); refreshConfigs()
 	say('Overwrote "' .. selectedName .. '" with your current setup.')
 end)
 
-confirmButton("Delete", ACCENT_DK, function()
+confirmButton("Delete", K.ACCENT_DK, function()
 	local name = selectedName
 	store.configs[name] = nil
 	if store.autoLoad == name then store.autoLoad = nil end
@@ -1403,7 +1404,7 @@ autoBtn = button(cfgPage, "", function()
 	if store.autoLoad == selectedName then store.autoLoad = nil else store.autoLoad = selectedName end
 	writeStore(); refreshConfigs()
 	say(store.autoLoad and ('"' .. selectedName .. '" will load on every execute.') or "Auto load turned off.")
-end, PANEL2, 28)
+end, K.PANEL2, 28)
 
 toggleRow(cfgPage, "Auto-save changes", "Keep the active config up to date", function() return store.autoSave end, function(v)
 	store.autoSave = v
@@ -1431,19 +1432,19 @@ refreshConfigs = function()
 	for n in pairs(store.configs) do names[#names + 1] = n end
 	table.sort(names, function(a, b) return a:lower() < b:lower() end)
 	if #names == 0 then
-		txt(listBox, "No saved configs yet. Name one above and tap Save new.", 10, DIM, nil, nil,
+		txt(listBox, "No saved configs yet. Name one above and tap Save new.", 10, K.DIM, nil, nil,
 			{ LayoutOrder = nextOrder(), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Size = UDim2.new(1, 0, 0, 28) })
 	end
 	for _, n in ipairs(names) do
 		local r = row(listBox, 30)
 		local picked = n == selectedName
-		r.BackgroundColor3 = picked and ACCENT_DK or PANEL2
-		mk("UIStroke", { Color = ACCENT, Thickness = 1, Transparency = picked and 0 or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, r)
-		txt(r, n, 12, LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -96, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd })
+		r.BackgroundColor3 = picked and K.ACCENT_DK or K.PANEL2
+		mk("UIStroke", { Color = K.ACCENT, Thickness = 1, Transparency = picked and 0 or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, r)
+		txt(r, n, 12, K.LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -96, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd })
 		local tag = ""
 		if n == store.active then tag = "ACTIVE" end
 		if n == store.autoLoad then tag = (tag == "") and "AUTO" or "ACTIVE · AUTO" end
-		txt(r, tag, 9, ACCENT2, Enum.Font.GothamBold, Enum.TextXAlignment.Right, { Position = UDim2.new(1, -88, 0, 0), Size = UDim2.new(0, 80, 1, 0) })
+		txt(r, tag, 9, K.ACCENT2, Enum.Font.GothamBold, Enum.TextXAlignment.Right, { Position = UDim2.new(1, -88, 0, 0), Size = UDim2.new(0, 80, 1, 0) })
 		local tap = mk("TextButton", { Text = "", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0) }, r)
 		tap.MouseButton1Click:Connect(function()
 			selectedName = n
@@ -1451,27 +1452,27 @@ refreshConfigs = function()
 		end)
 	end
 	if not selectedName or not store.configs[selectedName] then
-		autoBtn.Text, autoBtn.BackgroundColor3 = "Select a config", PANEL2
+		autoBtn.Text, autoBtn.BackgroundColor3 = "Select a config", K.PANEL2
 	elseif store.autoLoad == selectedName then
-		autoBtn.Text, autoBtn.BackgroundColor3 = "Auto load: ON", ACCENT_DK
+		autoBtn.Text, autoBtn.BackgroundColor3 = "Auto load: ON", K.ACCENT_DK
 	else
-		autoBtn.Text, autoBtn.BackgroundColor3 = "Auto load: OFF", PANEL2
+		autoBtn.Text, autoBtn.BackgroundColor3 = "Auto load: OFF", K.PANEL2
 	end
 end
 refreshConfigs()
 
 -- TEST
 local testPage = pages["Test"]
-button(testPage, "BUY NEAREST BOOTH ITEM", testBuyNearest, ACCENT, 34)
-button(testPage, "List nearby listings", testListNearby, PANEL2, 28)
+button(testPage, "BUY NEAREST BOOTH ITEM", testBuyNearest, K.ACCENT, 34)
+button(testPage, "List nearby listings", testListNearby, K.PANEL2, 28)
 note(testPage, "Buys the cheapest listing you can afford at the closest booth. If you're more than 30 studs away it teleports there first. You need to be in the Trading Plaza.", 38)
 sectionLabel(testPage, "LOG")
-local logBox = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = PANEL2, BorderSizePixel = 0,
+local logBox = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = K.PANEL2, BorderSizePixel = 0,
 	LayoutOrder = nextOrder() }, testPage)
 corner(logBox, 8)
 mk("UIPadding", { PaddingTop = UDim.new(0, 7), PaddingBottom = UDim.new(0, 7), PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }, logBox)
 local logLabel = mk("TextLabel", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
-	Text = "Nothing yet.", TextColor3 = LIGHT, Font = Enum.Font.Gotham, TextSize = 11, TextWrapped = true,
+	Text = "Nothing yet.", TextColor3 = K.LIGHT, Font = Enum.Font.Gotham, TextSize = 11, TextWrapped = true,
 	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, logBox)
 local logLines = {}
 testSink = function(text)
@@ -1484,8 +1485,8 @@ end
 paintMasters = function()
 	hopMaster.Text = cfg.hopOn and "STOP HOP SNIPER" or "START HOP SNIPER"
 	afkMaster.Text = cfg.afkOn and "STOP AUTO BUY" or "START AUTO BUY"
-	TweenService:Create(hopMaster, info, { BackgroundColor3 = cfg.hopOn and ACCENT_DK or ACCENT }):Play()
-	TweenService:Create(afkMaster, info, { BackgroundColor3 = cfg.afkOn and ACCENT_DK or ACCENT }):Play()
+	TweenService:Create(hopMaster, info, { BackgroundColor3 = cfg.hopOn and K.ACCENT_DK or K.ACCENT }):Play()
+	TweenService:Create(afkMaster, info, { BackgroundColor3 = cfg.afkOn and K.ACCENT_DK or K.ACCENT }):Play()
 	tabBtns["Hop Sniper"].Text = "Hop Sniper" .. (cfg.hopOn and "  •" or "")
 	tabBtns["AFK Sniper"].Text = "AFK Sniper" .. (cfg.afkOn and "  •" or "")
 end
@@ -1503,13 +1504,13 @@ setMode = function(mode)
 end
 if cfg.hopOn and cfg.afkOn then cfg.afkOn = false end
 paintMasters()
-showTab(TAB_NAMES[1])
+showTab(K.TAB_NAMES[1])
 
 -- minimize into a small draggable bubble (there is no close button, use Setup > Unload to remove)
-local bubble = mk("TextButton", { Text = "M", Font = Enum.Font.GothamBlack, TextSize = 16, TextColor3 = LIGHT, BackgroundColor3 = BG,
+local bubble = mk("TextButton", { Text = "M", Font = Enum.Font.GothamBlack, TextSize = 16, TextColor3 = K.LIGHT, BackgroundColor3 = K.BG,
 	BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.fromOffset(38, 38), Position = UDim2.fromOffset(12, 60), Visible = false }, gui)
 corner(bubble, 19)
-mk("UIStroke", { Color = ACCENT, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, bubble)
+mk("UIStroke", { Color = K.ACCENT, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, bubble)
 
 local function setMinimized(state)
 	if state then
@@ -1532,7 +1533,7 @@ task.spawn(function()
 	if not game:IsLoaded() then game.Loaded:Wait() end
 	local t0 = os.clock()
 	while alive and not LocalPlayer:GetAttribute("__LOADED") and os.clock() - t0 < 30 do task.wait(0.2) end
-	if game.PlaceId == PLAZA then
+	if game.PlaceId == K.PLAZA then
 		if type(getsenv) ~= "function" or type(getupvalues) ~= "function" then
 			stats.status = "Executor is missing getsenv/getupvalues"
 			return
@@ -1571,10 +1572,10 @@ track(RunService.Heartbeat:Connect(function(dt)
 		local now = os.clock()
 		stats.warn = (pname and ready and not hasActiveRules(pname))
 			and ("No enabled price rules in the " .. (pname == "afk" and "AFK" or "Hop") .. " tab") or nil
-		if cfg.hopOn and game.PlaceId ~= PLAZA and not hopping then
+		if cfg.hopOn and game.PlaceId ~= K.PLAZA and not hopping then
 			hopping = true
 			stats.status = "Going to the Trading Plaza..."
-			pcall(TeleportService.Teleport, TeleportService, PLAZA, LocalPlayer)
+			pcall(TeleportService.Teleport, TeleportService, K.PLAZA, LocalPlayer)
 		elseif cfg.hopOn and cfg.hopWhenIdle and ready and not hopping and #queue == 0 and not busy
 			and now - math.max(lastActivity, joinClock) > cfg.hopDelay then
 			hopServer()
