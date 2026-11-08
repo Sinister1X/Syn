@@ -7,8 +7,8 @@ local VIM = game:GetService("VirtualInputManager")
 local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
-local dodgeOn, airJumpOn, noclipOn = false, false, false
-local range = 10 -- studs, adjustable in the GUI
+local dodgeOn, airJumpOn, noclipOn = true, false, false -- Auto Dodge starts ON
+local range = 9.5 -- studs, adjustable in the GUI
 local rightOnly = true -- only react to brooms on your character's right side
 local autoRange = true -- range grows with ping / low FPS (Range stepper = base range)
 
@@ -166,23 +166,23 @@ end
 label("Broom Dodge", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0, 32), Enum.Font.GothamBold, 14, light)
 
 -- reusable sliding switch row
-local function addToggle(text, y, onChange)
+local function addToggle(text, y, onChange, startOn)
 	label(text, UDim2.fromOffset(14, y), UDim2.fromOffset(120, 28), Enum.Font.Gotham, 14, light, Enum.TextXAlignment.Left)
 	local track = Instance.new("TextButton")
 	track.Text, track.AutoButtonColor = "", false
 	track.Size = UDim2.fromOffset(50, 26)
 	track.Position = UDim2.new(1, -64, 0, y + 1)
-	track.BackgroundColor3 = off
+	track.BackgroundColor3 = startOn and green or off
 	track.BorderSizePixel = 0
 	track.Parent = frame
 	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 	local knob = Instance.new("Frame")
-	knob.Size, knob.Position = UDim2.fromOffset(20, 20), UDim2.fromOffset(3, 3)
+	knob.Size, knob.Position = UDim2.fromOffset(20, 20), startOn and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3)
 	knob.BackgroundColor3 = Color3.fromRGB(240, 240, 245)
 	knob.BorderSizePixel = 0
 	knob.Parent = track
 	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-	local on = false
+	local on = startOn == true
 	track.MouseButton1Click:Connect(function()
 		on = not on
 		TweenService:Create(track, info, { BackgroundColor3 = on and green or off }):Play()
@@ -191,7 +191,7 @@ local function addToggle(text, y, onChange)
 	end)
 end
 
-addToggle("Auto Dodge", 36, function(v) dodgeOn = v end)
+addToggle("Auto Dodge", 36, function(v) dodgeOn = v end, true)
 addToggle("Air Jump", 68, function(v) airJumpOn = v end)
 addToggle("Noclip", 100, function(v)
 	noclipOn = v
