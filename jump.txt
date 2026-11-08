@@ -1,0 +1,304 @@
+-- Broom Dodge + Air Jump + Noclip (draggable GUI)
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local VIM = game:GetService("VirtualInputManager")
+
+local player = Players.LocalPlayer
+local dodgeOn, airJumpOn, noclipOn = false, false, false
+local range = 10 -- studs, adjustable in the GUI
+local rightOnly = true -- only react to brooms on your character's right side
+
+---------------------------------------------------------------- helpers
+local function getHum()
+	local char = player.Character
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function isGrounded()
+	local hum = getHum()
+	if not hum then return false end
+	local st = hum:GetState()
+	return hum.FloorMaterial ~= Enum.Material.Air
+		or st == Enum.HumanoidStateType.Running
+		or st == Enum.HumanoidStateType.RunningNoPhysics
+		or st == Enum.HumanoidStateType.Landed
+end
+
+local function doJump()
+	local hum = getHum()
+	if hum then
+		hum.Jump = true
+		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end
+
+local function doDive()
+	VIM:SendKeyEvent(true, Enum.KeyCode.T, false, game)
+	task.wait(0.05)
+	VIM:SendKeyEvent(false, Enum.KeyCode.T, false, game)
+end
+
+---------------------------------------------------------------- air jump (every 0.03s while airborne)
+task.spawn(function()
+	while true do
+		task.wait(0.03)
+		if airJumpOn and not isGrounded() then
+			VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game) -- triggers the game's own double jump
+			task.delay(0.01, function() VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
+			local hum = getHum()
+			if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+		end
+	end
+end)
+
+---------------------------------------------------------------- noclip
+local origCollide = {}
+RunService.Stepped:Connect(function()
+	if not noclipOn then return end
+	local char = player.Character
+	if not char then return end
+	for _, d in ipairs(char:GetDescendants()) do
+		if d:IsA("BasePart") then
+			if origCollide[d] == nil then origCollide[d] = d.CanCollide end
+			d.CanCollide = false
+		end
+	end
+end)
+
+local function restoreCollide()
+	for part, v in pairs(origCollide) do
+		if part.Parent then part.CanCollide = v end
+	end
+	origCollide = {}
+end
+
+---------------------------------------------------------------- broom detection
+local ARMS = { high = "HighBroomArm", low = "LowBroomArm" }
+local armParts = { high = {}, low = {} }
+
+local function getSlots()
+	local node = workspace
+	for _, n in ipairs({ "__THINGS", "__INSTANCE_CONTAINER", "Active", "HalloweenGames", "ArenaSlots" }) do
+		node = node and node:FindFirstChild(n)
+	end
+	return node
+end
+
+local function scan()
+	armParts = { high = {}, low = {} }
+	local slots = getSlots()
+	if not slots then return end
+	for _, slot in ipairs(slots:GetChildren()) do
+		local sweep = slot:FindFirstChild("BroomSweep")
+		if sweep then
+			for kind, name in pairs(ARMS) do
+				local arm = sweep:FindFirstChild(name)
+				if arm then
+					if arm:IsA("BasePart") then table.insert(armParts[kind], arm) end
+					for _, d in ipairs(arm:GetDescendants()) do
+						if d:IsA("BasePart") then table.insert(armParts[kind], d) end
+					end
+				end
+			end
+		end
+	end
+end
+
+-- distance from you to the arm's box, ignoring your own height; also returns the closest point
+local function distToPart(p, pos)
+	local flat = Vector3.new(pos.X, p.Position.Y, pos.Z)
+	local lp = p.CFrame:PointToObjectSpace(flat)
+	local h = p.Size / 2
+	local c = Vector3.new(math.clamp(lp.X, -h.X, h.X), math.clamp(lp.Y, -h.Y, h.Y), math.clamp(lp.Z, -h.Z, h.Z))
+	return (lp - c).Magnitude, p.CFrame:PointToWorldSpace(c)
+end
+
+local function nearest(kind, root)
+	local pos = root.Position
+	local best = math.huge
+	for _, p in ipairs(armParts[kind]) do
+		if p.Parent then
+			local d, closest = distToPart(p, pos)
+			if not rightOnly or root.CFrame:PointToObjectSpace(closest).X >= -0.5 then
+				if d < best then best = d end
+			end
+		end
+	end
+	return best
+end
+
+---------------------------------------------------------------- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "BroomDodgeGui"
+gui.ResetOnSpawn = false
+gui.Parent = (gethui and gethui()) or player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(210, 240)
+frame.Position = UDim2.new(0.5, -105, 0.12, 0)
+frame.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+local stroke = Instance.new("UIStroke", frame)
+stroke.Color = Color3.fromRGB(60, 60, 75)
+
+local light = Color3.fromRGB(235, 235, 245)
+local dim = Color3.fromRGB(150, 150, 165)
+local green = Color3.fromRGB(70, 200, 120)
+local off = Color3.fromRGB(55, 55, 68)
+local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local function label(text, pos, size, font, ts, color, align)
+	local l = Instance.new("TextLabel")
+	l.Position, l.Size = pos, size
+	l.BackgroundTransparency = 1
+	l.Text, l.Font, l.TextSize, l.TextColor3 = text, font, ts, color
+	l.TextXAlignment = align or Enum.TextXAlignment.Center
+	l.Parent = frame
+	return l
+end
+
+label("Broom Dodge", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0, 32), Enum.Font.GothamBold, 14, light)
+
+-- reusable sliding switch row
+local function addToggle(text, y, onChange)
+	label(text, UDim2.fromOffset(14, y), UDim2.fromOffset(120, 28), Enum.Font.Gotham, 14, light, Enum.TextXAlignment.Left)
+	local track = Instance.new("TextButton")
+	track.Text, track.AutoButtonColor = "", false
+	track.Size = UDim2.fromOffset(50, 26)
+	track.Position = UDim2.new(1, -64, 0, y + 1)
+	track.BackgroundColor3 = off
+	track.BorderSizePixel = 0
+	track.Parent = frame
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+	local knob = Instance.new("Frame")
+	knob.Size, knob.Position = UDim2.fromOffset(20, 20), UDim2.fromOffset(3, 3)
+	knob.BackgroundColor3 = Color3.fromRGB(240, 240, 245)
+	knob.BorderSizePixel = 0
+	knob.Parent = track
+	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+	local on = false
+	track.MouseButton1Click:Connect(function()
+		on = not on
+		TweenService:Create(track, info, { BackgroundColor3 = on and green or off }):Play()
+		TweenService:Create(knob, info, { Position = on and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3) }):Play()
+		onChange(on)
+	end)
+end
+
+addToggle("Auto Dodge", 36, function(v) dodgeOn = v end)
+addToggle("Air Jump", 68, function(v) airJumpOn = v end)
+addToggle("Noclip", 100, function(v)
+	noclipOn = v
+	if not v then restoreCollide() end
+end)
+
+-- range stepper
+label("Range", UDim2.fromOffset(14, 136), UDim2.fromOffset(60, 28), Enum.Font.Gotham, 14, dim, Enum.TextXAlignment.Left)
+local rangeText = label(range .. " st", UDim2.fromOffset(104, 136), UDim2.fromOffset(52, 28), Enum.Font.GothamBold, 14, light)
+local function stepBtn(txt, x, delta)
+	local b = Instance.new("TextButton")
+	b.Size, b.Position = UDim2.fromOffset(28, 28), UDim2.fromOffset(x, 136)
+	b.Text, b.Font, b.TextSize = txt, Enum.Font.GothamBold, 16
+	b.TextColor3 = light
+	b.BackgroundColor3 = Color3.fromRGB(45, 45, 56)
+	b.AutoButtonColor, b.BorderSizePixel = true, 0
+	b.Parent = frame
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+	b.MouseButton1Click:Connect(function()
+		range = math.clamp(range + delta, 4, 25)
+		rangeText.Text = range .. " st"
+	end)
+end
+stepBtn("-", 72, -0.5)
+stepBtn("+", 162, 0.5)
+
+-- right-side filter chip
+local sideBtn = Instance.new("TextButton")
+sideBtn.Size, sideBtn.Position = UDim2.fromOffset(182, 28), UDim2.fromOffset(14, 172)
+sideBtn.Font, sideBtn.TextSize = Enum.Font.GothamMedium, 13
+sideBtn.AutoButtonColor, sideBtn.BorderSizePixel = false, 0
+sideBtn.Parent = frame
+Instance.new("UICorner", sideBtn).CornerRadius = UDim.new(0, 8)
+local function refreshSide()
+	sideBtn.Text = "Right side only: " .. (rightOnly and "On" or "Off")
+	TweenService:Create(sideBtn, info, {
+		BackgroundColor3 = rightOnly and green or Color3.fromRGB(45, 45, 56),
+		TextColor3 = rightOnly and Color3.fromRGB(20, 20, 25) or dim,
+	}):Play()
+end
+sideBtn.MouseButton1Click:Connect(function() rightOnly = not rightOnly; refreshSide() end)
+refreshSide()
+
+local readout = label("", UDim2.fromOffset(0, 208), UDim2.new(1, 0, 0, 24), Enum.Font.Gotham, 12, dim)
+
+-- dragging (mouse + touch)
+local dragging, dragStart, startPos
+frame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging, dragStart, startPos = true, input.Position, frame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+UIS.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = input.Position - dragStart
+		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end
+end)
+
+---------------------------------------------------------------- auto dodge loop
+local LOCKOUT = 0.8 -- min seconds between triggers of the same broom
+local APPROACH = -0.1 -- studs/sec; broom must be closing in faster than this
+local state = {
+	high = { armed = true, last = 0, prev = math.huge, rate = 0 },
+	low = { armed = true, last = 0, prev = math.huge, rate = 0 },
+}
+local lastScan, lastUI = 0, 0
+
+RunService.Heartbeat:Connect(function(dt)
+	local now = os.clock()
+	if now - lastScan > 1 then lastScan = now; scan() end
+
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	local dHigh, dLow = nearest("high", root), nearest("low", root)
+
+	if now - lastUI > 0.1 then
+		lastUI = now
+		local function f(d) return d == math.huge and "-" or string.format("%.1f", d) end
+		local sl = state.low
+		readout.Text = "H " .. f(dHigh) .. " | L " .. f(dLow) .. " | " .. string.format("%.1f", sl.rate)
+			.. (sl.armed and " armed" or " locked")
+	end
+	if not dodgeOn then return end
+
+	-- once per sweep, only for a broom moving toward you
+	local function update(kind, d, action, needsGround)
+		local s = state[kind]
+		if d == math.huge then s.prev, s.rate, s.armed = math.huge, 0, true; return end
+		if s.prev ~= math.huge and dt > 0 then
+			s.rate = s.rate * 0.6 + ((d - s.prev) / dt) * 0.4
+		end
+		s.prev = d
+		if s.armed then
+			if d <= range and s.rate < APPROACH and now - s.last > LOCKOUT
+				and (not needsGround or isGrounded()) then
+				s.armed, s.last = false, now
+				action()
+			end
+		elseif d > range + 2 then
+			s.armed = true
+		end
+	end
+
+	update("high", dHigh, function() task.spawn(doDive) end, false)
+	update("low", dLow, doJump, true)
+end)
