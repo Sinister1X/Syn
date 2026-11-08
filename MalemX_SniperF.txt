@@ -46,7 +46,7 @@ local function newProfile()
 end
 
 local cfg = {
-	hopOn = false, afkOn = false, minGems = 0, scanInterval = 0, teleport = true, tpDelay = 0.05, retries = 3,
+	hopOn = false, afkOn = false, whitelistOnly = false, minGems = 0, scanInterval = 0, teleport = true, tpDelay = 0.05, retries = 3,
 	maxPerBuy = 1000000, hopWhenIdle = true, hopDelay = 12, webhookOn = false, webhookUrl = "",
 	rules = { hop = newProfile(), afk = newProfile() },
 }
@@ -160,10 +160,20 @@ local function stripSize(name)
 	return out
 end
 
+local function stripVariant(name)
+	local out = tostring(name)
+	repeat
+		local before = out
+		out = out:gsub("^[Ss]hiny%s+", ""):gsub("^[Gg]olden%s+", ""):gsub("^[Rr]ainbow%s+", ""):gsub("^[Dd]ark [Mm]atter%s+", "")
+	until out == before
+	return out
+end
+
 local function hasActiveRules(pname)
 	local prof = cfg.rules[pname]
 	local function live(r) return r.Enabled ~= false and (r.MaxPrice ~= nil or r.Profit ~= nil) end
 	for _, r in ipairs(prof.items) do if live(r) then return true end end
+	if cfg.whitelistOnly then return false end
 	for _, r in ipairs(prof.custom) do if live(r) then return true end end
 	for _, key in ipairs(K.EXTRA_KEYS) do
 		if prof.extras[key] and live(prof.extras[key]) then return true end
@@ -209,13 +219,13 @@ local function rebuild()
 		end
 		for _, key in ipairs(K.EXTRA_KEYS) do
 			local r = prof.extras[key]
-			if r then
+			if r and not cfg.whitelistOnly then
 				blCache[r] = splitList(r.Blacklist)
 				table.insert(extrasList, { match = K.EXTRA_MATCH[key], rule = r })
 			end
 		end
 		for _, r in ipairs(prof.custom) do
-			if r.Class then
+			if r.Class and not cfg.whitelistOnly then
 				blCache[r] = splitList(r.Blacklist)
 				local cl = r.Class:lower()
 				customByClass[cl] = customByClass[cl] or {}
@@ -322,8 +332,8 @@ end
 local infoCache = setmetatable({}, { __mode = "k" })
 local function getInfo(listing)
 	local c = infoCache[listing]
-	if c then return c end
-	c = { ok = false, ver = {}, cands = {} }
+	if c and (c.ok or os.clock() - (c.t or 0) < 0.5) then return c end
+	c = { ok = false, ver = {}, cands = {}, t = os.clock() }
 	pcall(function()
 		local item = listing.Item
 		local d = item._data or {}
@@ -358,7 +368,7 @@ local function candidates(c, pname)
 	local byName = idx.byClassName[cl]
 	if byName then
 		local keys, seenKey = {}, {}
-		for _, k in ipairs({ c.name, c.base, stripSize(c.base), c.id }) do
+		for _, k in ipairs({ c.name, c.base, stripSize(c.base), stripVariant(stripSize(c.base)), c.id }) do
 			k = norm(k)
 			if not seenKey[k] then seenKey[k] = true; keys[#keys + 1] = k end
 		end
@@ -1238,7 +1248,16 @@ local function ruleCard(parent, rule, kind, pname, title)
 	tap.MouseButton1Click:Connect(function() openEditor(pname, rule, kind, false, title) end)
 end
 
+local whitelistPainters = {}
 local function buildRules(page, pname)
+	sectionLabel(page, "BUY MODE")
+	whitelistPainters[#whitelistPainters + 1] = toggleRow(page, "Only buy my whitelisted items", "Ignores the quick caps and class rules, buys only the items you add below",
+		function() return cfg.whitelistOnly end, function(on)
+			cfg.whitelistOnly = on
+			rebuild()
+			saveConfig()
+			for _, paint in ipairs(whitelistPainters) do paint(on) end
+		end)
 	sectionLabel(page, "QUICK PRICE CAPS")
 	local extrasBox = holderFrame(page)
 	sectionLabel(page, "SPECIFIC ITEMS")
@@ -1597,8 +1616,11 @@ task.spawn(function()
 			stats.status = "Executor is missing getsenv/getupvalues"
 			return
 		end
-		ready = bindGame()
-		stats.status = ready and idleStatus() or "Could not hook the booth system"
+		while alive and not ready do
+			ready = bindGame()
+			stats.status = ready and idleStatus() or "Hooking the booth system..."
+			if not ready then task.wait(2) end
+		end
 	else
 		stats.status = "Not in the Trading Plaza"
 	end
