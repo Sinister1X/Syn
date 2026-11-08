@@ -312,17 +312,28 @@ local function effRange(s, latency)
 	return math.clamp(range + s.speed * latency, 4, 30)
 end
 
+-- network "Data Ping" (ms), the same value as the Developer Console > Network tab
+local function getPing()
+	local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+	if ok and type(v) == "number" and v > 0 then return v end
+	ok, v = pcall(function() return Stats.PerformanceStats.Ping:GetValue() end)
+	if ok and type(v) == "number" and v > 0 then return v end
+	ok, v = pcall(function() return player:GetNetworkPing() * 2000 end) -- one-way seconds -> round-trip ms
+	if ok and type(v) == "number" and v > 0 then return v end
+	return nil
+end
+
 RunService.Heartbeat:Connect(function(dt)
 	local now = os.clock()
 	if now - lastScan > 1 then lastScan = now; scan() end
 
 	dtAvg = dtAvg * 0.9 + dt * 0.1
-	if now - lastPing > 0.5 then
+	if now - lastPing > 0.1 then
 		lastPing = now
-		local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-		if ok and v then pingLast = v; pingMs = pingMs == 0 and v or pingMs * 0.7 + v * 0.3 end
+		local v = getPing()
+		if v then pingMs, pingLast = v, v end -- raw Data Ping, no smoothing
 	end
-	-- total delay: smoothed round-trip ping + ~2 frames + Lead (Lead can be negative)
+	-- total delay: round-trip Data Ping + ~2 frames + Lead (Lead can be negative)
 	local latency = math.max(pingMs / 1000 + dtAvg * 2 + leadMs / 1000, 0)
 
 	local char = player.Character
