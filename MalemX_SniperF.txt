@@ -120,6 +120,56 @@ local function fmt(n)
 	return tostring(math.floor(n))
 end
 
+---------------------------------------------------------------- tiered items (Coins IV, Strong Pets V ...)
+local ROMAN = { "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X" }
+local ROMAN_VALUE = {}
+for i, r in ipairs(ROMAN) do ROMAN_VALUE[r] = i end
+local TIER_MAX = { Enchant = 5, Potion = 10 }
+
+-- "Coins IV" -> "Coins", 4.  Names without a numeral come back unchanged.
+local function splitTier(name)
+	local base, numeral = name:match("^(.-)%s+([IVXivx]+)$")
+	if base and base ~= "" and ROMAN_VALUE[numeral:upper()] then return base, ROMAN_VALUE[numeral:upper()] end
+	return name, nil
+end
+
+local function expandTiers(class, list)
+	local out, max = {}, TIER_MAX[class]
+	for _, n in ipairs(list) do
+		if max then
+			for t = 1, max do out[#out + 1] = { label = n .. " " .. ROMAN[t], name = n, tier = t } end
+		else
+			out[#out + 1] = { label = n, name = n }
+		end
+	end
+	return out
+end
+
+local function itemTitle(r)
+	local name = tostring(r.Item)
+	if TIER_MAX[r.Class] and r.Tier and ROMAN[r.Tier] then name = name .. " " .. ROMAN[r.Tier] end
+	return string.format("%s  ·  %s", name, tostring(r.Class))
+end
+
+-- names are compared without case, spaces or punctuation, and a rule for "Wisp Griffin" also
+-- catches the Huge / Titanic / Gargantuan version of it
+local function norm(s) return (tostring(s):lower():gsub("[^%w]", "")) end
+local function stripSize(name)
+	local out = name:gsub("^[Hh]uge%s+", ""):gsub("^[Tt]itanic%s+", ""):gsub("^[Gg]argantuan%s+", "")
+	return out
+end
+
+local function hasActiveRules(pname)
+	local prof = cfg.rules[pname]
+	local function live(r) return r.Enabled ~= false and (r.MaxPrice ~= nil or r.Profit ~= nil) end
+	for _, r in ipairs(prof.items) do if live(r) then return true end end
+	for _, r in ipairs(prof.custom) do if live(r) then return true end end
+	for _, key in ipairs(EXTRA_KEYS) do
+		if prof.extras[key] and live(prof.extras[key]) then return true end
+	end
+	return false
+end
+
 ---------------------------------------------------------------- rule matching
 local index = { hop = {}, afk = {} }
 local cfgVersion = 0
@@ -150,7 +200,7 @@ local function rebuild()
 		for _, r in ipairs(prof.items) do
 			if r.Class and r.Item then
 				blCache[r] = splitList(r.Blacklist)
-				local cl, nm = r.Class:lower(), r.Item:lower()
+				local cl, nm = r.Class:lower(), norm(r.Item)
 				byClassName[cl] = byClassName[cl] or {}
 				byClassName[cl][nm] = byClassName[cl][nm] or {}
 				table.insert(byClassName[cl][nm], r)
@@ -276,6 +326,12 @@ local function getInfo(listing)
 		c.id = d.id
 		c.sh = d.sh == true
 		c.tier = (c.class == "Pet") and (d.pt or 0) or (d.tn or 0)
+		c.base = c.name
+		if c.class ~= "Pet" then
+			local base, n = splitTier(c.name)
+			c.base = base
+			if n and d.tn == nil then c.tier = n end
+		end
 		c.rap = tonumber(item:GetRAP()) or 0
 		c.huge = item.IsHuge and item:IsHuge() or false
 		c.titanic = item.IsTitanic and item:IsTitanic() or false
@@ -295,8 +351,11 @@ local function candidates(c, pname)
 	local cl = c.class:lower()
 	local byName = idx.byClassName[cl]
 	if byName then
-		local keys = { c.name:lower() }
-		if c.id and tostring(c.id):lower() ~= keys[1] then keys[2] = tostring(c.id):lower() end
+		local keys, seenKey = {}, {}
+		for _, k in ipairs({ c.name, c.base, stripSize(c.base), c.id }) do
+			k = norm(k)
+			if not seenKey[k] then seenKey[k] = true; keys[#keys + 1] = k end
+		end
 		for _, k in ipairs(keys) do
 			for _, r in ipairs(byName[k] or {}) do
 				if staticOk(r, c) then list[#list + 1] = r end
@@ -316,6 +375,7 @@ end
 ---------------------------------------------------------------- game access
 local stats = { scanned = 0, matches = 0, bought = 0, spent = 0, profit = 0, last = "-", status = "Idle", diamonds = 0 }
 local queue, handled, busy = {}, {}, false
+local diamondsKnown = false
 if autoLoadedName then stats.last = "Auto loaded " .. autoLoadedName end
 local lastActivity, joinClock = os.clock(), os.clock()
 
@@ -443,12 +503,15 @@ local function scan(pname)
 											local t0 = handled[id]
 											if not t0 or os.clock() - t0 > 2 then
 												local amount = (listing.Item._data and listing.Item._data._am) or 1
-												local afford = math.floor((stats.diamonds - cfg.minGems) / cost)
+												local afford = diamondsKnown and math.floor((stats.diamonds - cfg.minGems) / cost) or math.huge
 												local qty = math.min(amount, afford, cfg.maxPerBuy)
 												if qty >= 1 then
 													handled[id] = os.clock()
 													table.insert(queue, { uid = uid, key = key, qty = qty, cost = cost, rap = c.rap,
 														name = c.name, id = id, ready = listing.ReadyTimestamp })
+													stats.note = nil
+												else
+													stats.note = string.format("Can't afford %s: you have %s gems, keeping %s", c.name, fmt(stats.diamonds), fmt(cfg.minGems))
 												end
 											end
 											break
@@ -529,9 +592,9 @@ local function loadCatalog(class, cb)
 end
 
 ---------------------------------------------------------------- GUI
-local W, H = 380, 214
+local W, H = 430, 246
 local HEAD = 32
-local SIDE_W = 84
+local SIDE_W = 92
 
 local BG = Color3.fromRGB(13, 10, 11)
 local BODY = Color3.fromRGB(19, 13, 15)
@@ -682,7 +745,7 @@ end
 for i, n in ipairs(TAB_NAMES) do
 	pages[n] = newPage()
 	local b = mk("TextButton", { Text = n, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = DIM, BackgroundColor3 = PANEL2,
-		BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = i }, tabList)
+		BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = i }, tabList)
 	corner(b, 8)
 	tabBtns[n] = b
 	b.MouseButton1Click:Connect(function() showTab(n) end)
@@ -771,7 +834,7 @@ end
 -- rule summary text
 local function summary(r)
 	local parts = {}
-	if r.Tier ~= nil then parts[#parts + 1] = "tier " .. tostring(r.Tier) end
+	if r.Tier ~= nil and not (r.Item and TIER_MAX[r.Class]) then parts[#parts + 1] = "tier " .. tostring(r.Tier) end
 	if r.Shiny ~= nil then parts[#parts + 1] = r.Shiny and "shiny" or "non-shiny" end
 	if r.MaxPrice then parts[#parts + 1] = "max " .. fmt(r.MaxPrice) end
 	if r.Profit then parts[#parts + 1] = r.Profit .. "% off RAP" end
@@ -807,7 +870,7 @@ end
 local function fieldCell(parent, label)
 	local f = mk("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundColor3 = PANEL2, BorderSizePixel = 0, LayoutOrder = nextOrder() }, parent)
 	corner(f, 8)
-	txt(f, label, 10, DIM, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(9, 3), Size = UDim2.new(1, -18, 0, 12) })
+	txt(f, label, 10, DIM, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(9, 3), Size = UDim2.new(1, -18, 0, 12), TextTruncate = Enum.TextTruncate.AtEnd })
 	return f
 end
 local function fieldBox(parent, label, text, placeholder)
@@ -850,7 +913,7 @@ local function openEditor(pname, rule, kind, isNew, title)
 		nameBox = fieldBox(sheet, "Item name  (" .. tostring(rule.Class) .. ")", rule.Item or "", "exact item name")
 	end
 	local grid = gridFrame(sheet, UDim2.new(0.5, -3, 0, 44))
-	local tierBox = fieldBox(grid, "Tier  (pets: 0 normal, 1 gold, 2 rainbow)", rule.Tier ~= nil and tostring(rule.Tier) or "", "any")
+	local tierBox = fieldBox(grid, "Tier (pets 0-2, I-V = 1-5)", rule.Tier ~= nil and tostring(rule.Tier) or "", "any")
 	local shinySel = shinyIdx(rule.Shiny)
 	fieldCycle(grid, "Shiny (pets)", SHINY_OPTS, shinySel, function(i) shinySel = i end)
 	local priceBox = fieldBox(grid, "Max price each", rule.MaxPrice and fmt(rule.MaxPrice) or "", "e.g. 10k")
@@ -912,9 +975,9 @@ local function openPicker(pname)
 	local list = holderFrame(sheet)
 	local current, names = "Pet", {}
 
-	local function choose(class, name)
+	local function choose(class, name, tier)
 		closeOverlay()
-		openEditor(pname, { Class = class, Item = name, Enabled = true }, "item", true, "New item rule")
+		openEditor(pname, { Class = class, Item = name, Tier = tier, Enabled = true }, "item", true, "New item rule")
 	end
 
 	local function refresh()
@@ -923,19 +986,23 @@ local function openPicker(pname)
 		local q = search.Text:lower()
 		local shown = 0
 		if q ~= "" then
-			local custom = button(list, 'Use "' .. search.Text .. '" as the name', function() choose(current, search.Text) end, PANEL2, 28)
+			local custom = button(list, 'Use "' .. search.Text .. '" as the name', function()
+				local base, tier = search.Text, nil
+				if current ~= "Pet" then base, tier = splitTier(search.Text) end
+				choose(current, base, tier)
+			end, PANEL2, 28)
 			custom.TextColor3 = ACCENT2
 			custom.TextSize = 11
 		end
-		for _, n in ipairs(names) do
-			if q == "" or n:lower():find(q, 1, true) then
+		for _, e in ipairs(names) do
+			if q == "" or e.label:lower():find(q, 1, true) then
 				shown += 1
-				local b = button(list, n, function() choose(current, n) end, PANEL2, 28)
+				local b = button(list, e.label, function() choose(current, e.name, e.tier) end, PANEL2, 28)
 				b.TextXAlignment = Enum.TextXAlignment.Left
 				b.Font = Enum.Font.Gotham
 				b.TextSize = 12
 				mk("UIPadding", { PaddingLeft = UDim.new(0, 9) }, b)
-				if shown >= 40 then break end
+				if shown >= 60 then break end
 			end
 		end
 		if shown == 0 and q == "" then txt(list, "Loading...", 11, DIM, nil, nil, { LayoutOrder = nextOrder() }) end
@@ -951,7 +1018,7 @@ local function openPicker(pname)
 		names = {}
 		refresh()
 		loadCatalog(class, function(got)
-			if current == class and list.Parent then names = got; refresh() end
+			if current == class and list.Parent then names = expandTiers(class, got); refresh() end
 		end)
 	end
 	for _, class in ipairs(CLASS_ORDER) do
@@ -1018,7 +1085,7 @@ local function buildRules(page, pname)
 			txt(itemsBox, "No items yet. Tap \"Add item\" to pick one.", 10, DIM, nil, nil, { LayoutOrder = nextOrder(), Size = UDim2.new(1, 0, 0, 16) })
 		end
 		for _, r in ipairs(prof.items) do
-			ruleCard(itemsBox, r, "item", pname, string.format("%s  ·  %s", tostring(r.Item), tostring(r.Class)))
+			ruleCard(itemsBox, r, "item", pname, itemTitle(r))
 		end
 		clear(customBox)
 		for _, r in ipairs(prof.custom) do
@@ -1038,7 +1105,7 @@ local function statCard(page)
 	statViews[#statViews + 1] = function()
 		left.Text = string.format("Gems  %s\nScanned  %d\nMatches  %d", fmt(stats.diamonds), stats.scanned, stats.matches)
 		right.Text = string.format("Bought  %d\nSpent  %s\nProfit  %s", stats.bought, fmt(stats.spent), fmt(stats.profit))
-		last.Text = "Last  " .. stats.last
+		last.Text = stats.warn or stats.note or ("Last  " .. stats.last)
 	end
 end
 
@@ -1093,7 +1160,7 @@ local function buildSettings()
 
 	clear(setupPage)
 	sectionLabel(setupPage, "BUYING")
-	inputRow(setupPage, "Keep gems", fmt(cfg.minGems), "0", numCommit("minGems", 0, 1e15, true), 84)
+	inputRow(setupPage, "Gems to keep", fmt(cfg.minGems), "0", numCommit("minGems", 0, 1e15, true), 84)
 	inputRow(setupPage, "Max per buy", fmt(cfg.maxPerBuy), "any", numCommit("maxPerBuy", 1, 1e9, true), 84)
 	inputRow(setupPage, "Buy attempts", tostring(cfg.retries), "3", numCommit("retries", 1, 10), 60)
 	cycleRow(setupPage, "Scan speed", SCAN_OPTS, scanIdx, function(i) cfg.scanInterval = SCAN_VALUES[i]; saveConfig() end)
@@ -1267,6 +1334,7 @@ paintMasters = function()
 end
 setMode = function(mode)
 	cfg.hopOn, cfg.afkOn = mode == "hop", mode == "afk"
+	stats.note = nil
 	if mode then
 		lastActivity, joinClock = os.clock(), os.clock()
 		if not busy then stats.status = idleStatus() end
@@ -1328,7 +1396,7 @@ track(RunService.Heartbeat:Connect(function(dt)
 	if ready and accDiamonds > 0.25 then
 		accDiamonds = 0
 		local ok, v = pcall(function() return CurrencyCmds.Get("Diamonds") end)
-		if ok and type(v) == "number" then stats.diamonds = v end
+		if ok and type(v) == "number" then stats.diamonds = v; diamondsKnown = true end
 	end
 	local pname = activeProfile()
 	if ready and pname then
@@ -1344,6 +1412,8 @@ track(RunService.Heartbeat:Connect(function(dt)
 	if accSlow > 0.5 then
 		accSlow = 0
 		local now = os.clock()
+		stats.warn = (pname and ready and not hasActiveRules(pname))
+			and ("No enabled price rules in the " .. (pname == "afk" and "AFK" or "Hop") .. " tab") or nil
 		if cfg.hopOn and game.PlaceId ~= PLAZA and not hopping then
 			hopping = true
 			stats.status = "Going to the Trading Plaza..."
