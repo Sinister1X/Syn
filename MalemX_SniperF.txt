@@ -131,6 +131,8 @@ K.TIER_MAX = { Enchant = 5, Potion = 10 }
 local function splitTier(name)
 	local base, numeral = name:match("^(.-)%s+([IVXivx]+)$")
 	if base and base ~= "" and K.ROMAN_VALUE[numeral:upper()] then return base, K.ROMAN_VALUE[numeral:upper()] end
+	local b2, num = name:match("^(.-)%s+(%d+)$")
+	if b2 and b2 ~= "" and tonumber(num) and tonumber(num) >= 1 and tonumber(num) <= 10 then return b2, tonumber(num) end
 	return name, nil
 end
 
@@ -155,6 +157,8 @@ end
 -- names are compared without case, spaces or punctuation, and a rule for "Wisp Griffin" also
 -- catches the Huge / Titanic / Gargantuan version of it
 local function norm(s) return (tostring(s):lower():gsub("[^%w]", "")) end
+K.normClass = function(x) return (norm(x):gsub("s$", "")) end
+K.RULE_EFF = setmetatable({}, { __mode = "k" }) -- rule -> { tier = n } when the item name itself carries a tier ("Treasure Hunter IV")
 local function stripSize(name)
 	local out = name:gsub("^[Hh]uge%s+", ""):gsub("^[Tt]itanic%s+", ""):gsub("^[Gg]argantuan%s+", "")
 	return out
@@ -174,7 +178,6 @@ local function hasActiveRules(pname)
 	local function live(r) return r.Enabled ~= false and r.MaxPrice ~= nil end
 	for _, r in ipairs(prof.items) do if live(r) then return true end end
 	if cfg.whitelistOnly then return false end
-	for _, r in ipairs(prof.custom) do if live(r) then return true end end
 	for _, key in ipairs(K.EXTRA_KEYS) do
 		if prof.extras[key] and live(prof.extras[key]) then return true end
 	end
@@ -207,14 +210,22 @@ K.EXTRA_MATCH = {
 local function rebuild()
 	cfgVersion += 1
 	for pname, prof in pairs(cfg.rules) do
-		local byClassName, extrasList, customByClass = {}, {}, {}
+		local byClassName, extrasList, customByClass, byAny = {}, {}, {}, {}
 		for _, r in ipairs(prof.items) do
 			if r.Class and r.Item then
 				blCache[r] = splitList(r.Blacklist)
-				local cl, nm = r.Class:lower(), norm(r.Item)
+				local itemName = tostring(r.Item)
+				K.RULE_EFF[r] = nil
+				if r.Class ~= "Pet" then
+					local b, n = splitTier(itemName)
+					if n then itemName = b; K.RULE_EFF[r] = { tier = n } end
+				end
+				local cl, nm = K.normClass(r.Class), norm(itemName)
 				byClassName[cl] = byClassName[cl] or {}
 				byClassName[cl][nm] = byClassName[cl][nm] or {}
 				table.insert(byClassName[cl][nm], r)
+				byAny[nm] = byAny[nm] or {}
+				table.insert(byAny[nm], r)
 			end
 		end
 		for _, key in ipairs(K.EXTRA_KEYS) do
@@ -224,15 +235,7 @@ local function rebuild()
 				table.insert(extrasList, { match = K.EXTRA_MATCH[key], rule = r })
 			end
 		end
-		for _, r in ipairs(prof.custom) do
-			if r.Class and not cfg.whitelistOnly then
-				blCache[r] = splitList(r.Blacklist)
-				local cl = r.Class:lower()
-				customByClass[cl] = customByClass[cl] or {}
-				table.insert(customByClass[cl], r)
-			end
-		end
-		index[pname] = { byClassName = byClassName, extrasList = extrasList, customByClass = customByClass }
+		index[pname] = { byClassName = byClassName, extrasList = extrasList, customByClass = customByClass, byAny = byAny }
 	end
 end
 rebuild()
@@ -307,7 +310,9 @@ end
 local function staticOk(r, c)
 	if r.Enabled == false then return false end
 	if r.MaxPrice == nil then return false end -- never buy with no price limit
-	if r.Tier ~= nil and r.Tier ~= c.tier then return false end
+	local want = r.Tier
+	if want == nil and K.RULE_EFF[r] then want = K.RULE_EFF[r].tier end
+	if want ~= nil and want ~= c.tier and want ~= c.tierAlt then return false end
 	if r.Shiny ~= nil and r.Shiny ~= c.sh then return false end
 	local bl = blCache[r]
 	if bl and (bl[c.name:lower()] or (c.id and bl[tostring(c.id):lower()])) then return false end
@@ -318,7 +323,9 @@ end
 local function staticWhy(r, c)
 	if r.Enabled == false then return "that rule is switched off" end
 	if r.MaxPrice == nil then return "that rule has no max price" end
-	if r.Tier ~= nil and r.Tier ~= c.tier then return string.format("tier is %s, rule wants %s", tostring(c.tier), tostring(r.Tier)) end
+	local want = r.Tier
+	if want == nil and K.RULE_EFF[r] then want = K.RULE_EFF[r].tier end
+	if want ~= nil and want ~= c.tier and want ~= c.tierAlt then return string.format("tier is %s, rule wants %s", tostring(c.tier), tostring(want)) end
 	if r.Shiny ~= nil and r.Shiny ~= c.sh then return "shiny setting does not match" end
 	return "blacklisted"
 end
@@ -348,6 +355,7 @@ local function getInfo(listing)
 		if c.class ~= "Pet" then
 			local base, n = splitTier(c.name)
 			c.base = base
+			c.tierAlt = n
 			if n and d.tn == nil then c.tier = n end
 		end
 		pcall(function() c.huge = (item.IsHuge and item:IsHuge()) and true or false end)
@@ -365,7 +373,7 @@ local function candidates(c, pname)
 	local idx = index[pname]
 	local list = {}
 	local why = nil
-	local cl = c.class:lower()
+	local cl = K.normClass(c.class)
 	local byName = idx.byClassName[cl]
 	if byName then
 		local keys, seenKey = {}, {}
@@ -384,6 +392,12 @@ local function candidates(c, pname)
 	end
 	for _, r in ipairs(idx.customByClass[cl] or {}) do
 		if staticOk(r, c) then list[#list + 1] = r end
+	end
+	if #list == 0 and not why and idx.byAny then
+		for _, k in ipairs({ norm(c.name), norm(c.base), norm(stripSize(c.base)) }) do
+			local other = idx.byAny[k] and idx.byAny[k][1]
+			if other then why = string.format("your rule is class %s but the game says this is class %s", tostring(other.Class), tostring(c.class)) break end
+		end
 	end
 	c.ver[pname], c.cands[pname] = cfgVersion, list
 	c.miss[pname] = (#list == 0) and why or nil
@@ -895,6 +909,7 @@ corner(dot, 4)
 txt(head, "MalemX Sniper", 14, K.LIGHT, Enum.Font.GothamBold, nil, { Position = UDim2.fromOffset(28, 0), Size = UDim2.new(0, 118, 1, 0) })
 local headSub = txt(head, "Idle", 11, K.DIM, nil, Enum.TextXAlignment.Right, { Position = UDim2.fromOffset(150, 0),
 	Size = UDim2.new(1, -196, 1, 0), TextTruncate = Enum.TextTruncate.AtEnd })
+headSub.Visible = false
 local minBtn = mk("TextButton", { Text = "-", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = K.LIGHT, BackgroundColor3 = K.PANEL2,
 	BorderSizePixel = 0, AutoButtonColor = true, Size = UDim2.fromOffset(26, 22), Position = UDim2.new(1, -36, 0, 5) }, head)
 corner(minBtn, 8)
@@ -1272,9 +1287,6 @@ local function buildRules(page, pname)
 	sectionLabel(page, "SPECIFIC ITEMS")
 	button(page, "+  Add item", function() openPicker(pname) end, K.ACCENT, 30)
 	local itemsBox = holderFrame(page)
-	sectionLabel(page, "CUSTOM CLASS RULES")
-	button(page, "+  Custom class rule", function() openClassChooser(pname) end, K.PANEL2, 28)
-	local customBox = holderFrame(page)
 
 	renderers[pname] = function()
 		local prof = cfg.rules[pname]
@@ -1288,10 +1300,6 @@ local function buildRules(page, pname)
 		end
 		for _, r in ipairs(prof.items) do
 			ruleCard(itemsBox, r, "item", pname, itemTitle(r))
-		end
-		clear(customBox)
-		for _, r in ipairs(prof.custom) do
-			ruleCard(customBox, r, "custom", pname, "Any " .. tostring(r.Class))
 		end
 	end
 	renderers[pname]()
@@ -1323,14 +1331,12 @@ end
 local hopPage = pages["Hop Sniper"]
 local hopMaster = masterButton(hopPage, "hop")
 note(hopPage, "Scans every booth, buys what matches, then hops to a new server when nothing is left.", 26)
-statCard(hopPage)
 local hopSettingsBox = holderFrame(hopPage)
 
 -- AFK SNIPER
 local afkPage = pages["AFK Sniper"]
 local afkMaster = masterButton(afkPage, "afk")
 note(afkPage, "Stays in this server. The moment a listing matches your caps below, it teleports to that booth and buys it. Never hops.", 38)
-statCard(afkPage)
 
 -- SETUP
 local setupPage = pages["Setup"]
