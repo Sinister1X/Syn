@@ -8,6 +8,7 @@ local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
 local dodgeOn, airJumpOn, noclipOn = true, false, false -- Auto Dodge starts ON
+local speedOn = true -- Speed starts ON
 local range = 9.5 -- studs, adjustable in the GUI
 local rightOnly = true -- only react to brooms on your character's right side
 local autoRange = true -- range grows with ping / low FPS (Range stepper = base range)
@@ -51,6 +52,31 @@ task.spawn(function()
 			task.delay(0.01, function() VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
 			local hum = getHum()
 			if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+		end
+	end
+end)
+
+---------------------------------------------------------------- speed (+10%, re-applied every 0.07s)
+local SPEED_MULT = 1.1
+local speedBase, speedSet, speedHum
+local function restoreSpeed()
+	if speedHum and speedHum.Parent and speedBase then speedHum.WalkSpeed = speedBase end
+	speedBase, speedSet, speedHum = nil, nil, nil
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.07)
+		if speedOn then
+			local hum = getHum()
+			if hum then
+				if hum ~= speedHum then speedHum, speedBase, speedSet = hum, nil, nil end -- new character
+				local cur = hum.WalkSpeed
+				-- if the game changed the speed itself, that is the new "regular" speed
+				if speedSet == nil or math.abs(cur - speedSet) > 0.01 then speedBase = cur end
+				speedSet = speedBase * SPEED_MULT
+				hum.WalkSpeed = speedSet
+			end
 		end
 	end
 end)
@@ -138,7 +164,7 @@ gui.ResetOnSpawn = false
 gui.Parent = (gethui and gethui()) or player:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(210, 280)
+frame.Size = UDim2.fromOffset(210, 312)
 frame.Position = UDim2.new(0.5, -105, 0.12, 0)
 frame.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 frame.BorderSizePixel = 0
@@ -197,13 +223,17 @@ addToggle("Noclip", 100, function(v)
 	noclipOn = v
 	if not v then restoreCollide() end
 end)
+addToggle("Speed +10%", 132, function(v)
+	speedOn = v
+	if not v then restoreSpeed() end
+end, true)
 
 -- range stepper
-label("Range", UDim2.fromOffset(14, 136), UDim2.fromOffset(60, 28), Enum.Font.Gotham, 14, dim, Enum.TextXAlignment.Left)
-local rangeText = label(range .. " st", UDim2.fromOffset(104, 136), UDim2.fromOffset(52, 28), Enum.Font.GothamBold, 14, light)
+label("Range", UDim2.fromOffset(14, 168), UDim2.fromOffset(60, 28), Enum.Font.Gotham, 14, dim, Enum.TextXAlignment.Left)
+local rangeText = label(range .. " st", UDim2.fromOffset(104, 168), UDim2.fromOffset(52, 28), Enum.Font.GothamBold, 14, light)
 local function stepBtn(txt, x, delta)
 	local b = Instance.new("TextButton")
-	b.Size, b.Position = UDim2.fromOffset(28, 28), UDim2.fromOffset(x, 136)
+	b.Size, b.Position = UDim2.fromOffset(28, 28), UDim2.fromOffset(x, 168)
 	b.Text, b.Font, b.TextSize = txt, Enum.Font.GothamBold, 16
 	b.TextColor3 = light
 	b.BackgroundColor3 = Color3.fromRGB(45, 45, 56)
@@ -237,12 +267,12 @@ local function addChip(y, textFn, getOn, flip)
 	b.MouseButton1Click:Connect(function() flip(); refresh() end)
 	refresh()
 end
-addChip(172, function(on) return "Right side only: " .. (on and "On" or "Off") end,
+addChip(204, function(on) return "Right side only: " .. (on and "On" or "Off") end,
 	function() return rightOnly end, function() rightOnly = not rightOnly end)
-addChip(206, function(on) return "Auto range (ping/FPS): " .. (on and "On" or "Off") end,
+addChip(238, function(on) return "Auto range (ping/FPS): " .. (on and "On" or "Off") end,
 	function() return autoRange end, function() autoRange = not autoRange end)
 
-local readout = label("", UDim2.fromOffset(0, 240), UDim2.new(1, 0, 0, 34), Enum.Font.Gotham, 12, dim)
+local readout = label("", UDim2.fromOffset(0, 272), UDim2.new(1, 0, 0, 34), Enum.Font.Gotham, 12, dim)
 
 -- dragging (mouse + touch)
 local dragging, dragStart, startPos
