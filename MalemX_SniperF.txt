@@ -138,7 +138,7 @@ local function expandTiers(class, list)
 	local out, max = {}, K.TIER_MAX[class]
 	for _, n in ipairs(list) do
 		if max then
-			for t = 1, max do out[#out + 1] = { label = n .. " " .. ROMAN[t], name = n, tier = t } end
+			for t = 1, max do out[#out + 1] = { label = n .. " " .. K.ROMAN[t], name = n, tier = t } end
 		else
 			out[#out + 1] = { label = n, name = n }
 		end
@@ -148,7 +148,7 @@ end
 
 local function itemTitle(r)
 	local name = tostring(r.Item)
-	if K.TIER_MAX[r.Class] and r.Tier and K.ROMAN[r.Tier] then name = name .. " " .. ROMAN[r.Tier] end
+	if K.TIER_MAX[r.Class] and r.Tier and K.ROMAN[r.Tier] then name = name .. " " .. K.ROMAN[r.Tier] end
 	return string.format("%s  ·  %s", name, tostring(r.Class))
 end
 
@@ -536,7 +536,7 @@ local function hopServer()
 	hopping = true
 	stats.status = "Finding a server..."
 	task.spawn(function()
-		local url = "https://games.roblox.com/v1/games/" .. PLAZA .. "/servers/Public?sortOrder=Desc&limit=100"
+		local url = "https://games.roblox.com/v1/games/" .. K.PLAZA .. "/servers/Public?sortOrder=Desc&limit=100"
 		local ok, body = pcall(function()
 			if requestFn then
 				local r = requestFn({ Url = url, Method = "GET" })
@@ -619,29 +619,36 @@ local function nearestBooth()
 	return best
 end
 
-local function testBuyNearest()
+local function testBuyNearest(auto)
 	if testBusy then return end
 	testBusy = true
+	-- in auto mode only the results are logged, not every step
+	local say = testSay
+	if auto then
+		say = function(t)
+			if t:find("Bought") or t:find("refused") or t:find("Error") or t:find("Teleport failed") then testSay(t) end
+		end
+	end
 	task.spawn(function()
 		local ok, err = pcall(function()
 			if not Purchase or not getState then
-				testSay("Not hooked yet. Join the Trading Plaza and wait for it to load.")
+				say("Not hooked yet. Join the Trading Plaza and wait for it to load.")
 				return
 			end
 			local best, why = nearestBooth()
 			if not best then
-				testSay(why or "No booth with a listing you can afford was found.")
+				say(why or "No booth with a listing you can afford was found.")
 				return
 			end
 			local c = getInfo(best.listing)
 			local name = c.ok and c.name or "an item"
-			testSay(string.format("Nearest: %s's booth, %d studs away. %s for %s gems.", best.owner, math.floor(best.dist), name, fmt(best.cost)))
+			say(string.format("Nearest: %s's booth, %d studs away. %s for %s gems.", best.owner, math.floor(best.dist), name, fmt(best.cost)))
 			if best.dist > K.BUY_RANGE then
-				testSay("Out of range, teleporting...")
-				if not gotoBooth(best.uid) then testSay("Teleport failed, trying the buy anyway.") end
+				say("Out of range, teleporting...")
+				if not gotoBooth(best.uid) then say("Teleport failed, trying the buy anyway.") end
 				task.wait(math.max(cfg.tpDelay, 0.15))
 			else
-				testSay("In range, buying from here.")
+				say("In range, buying from here.")
 			end
 			local waited, readyAt = 0, best.listing.ReadyTimestamp
 			while readyAt and workspace:GetServerTimeNow() < readyAt and waited < 10 do
@@ -649,20 +656,20 @@ local function testBuyNearest()
 			end
 			for attempt = 1, math.max(cfg.retries, 1) do
 				local s, res = pcall(function() return Purchase:InvokeServer(best.uid, { [best.key] = 1 }, K.CALLER) end)
-				testSay(string.format("Attempt %d: call %s, server said %s", attempt, s and "went through" or "errored", tostring(res)))
+				say(string.format("Attempt %d: call %s, server said %s", attempt, s and "went through" or "errored", tostring(res)))
 				if s and res then
 					stats.bought += 1
 					stats.spent += best.cost
 					stats.diamonds -= best.cost
 					stats.last = string.format("%s x1 @ %s", name, fmt(best.cost))
-					testSay("Bought it.")
+					say("Bought it.")
 					return
 				end
 				RunService.Heartbeat:Wait()
 			end
-			testSay("The server refused every attempt.")
+			say("The server refused every attempt.")
 		end)
-		if not ok then testSay("Error: " .. tostring(err)) end
+		if not ok then say("Error: " .. tostring(err)) end
 		testBusy = false
 	end)
 end
@@ -902,18 +909,22 @@ local function switch(parent, getOn, onChange)
 	local knob = mk("Frame", { Size = UDim2.fromOffset(12, 12), Position = getOn() and UDim2.fromOffset(19, 3) or UDim2.fromOffset(3, 3),
 		BackgroundColor3 = K.WHITE, BorderSizePixel = 0 }, trackBtn)
 	corner(knob, 6)
-	trackBtn.MouseButton1Click:Connect(function()
-		local on = not getOn()
+	local function paint(on)
 		TweenService:Create(trackBtn, info, { BackgroundColor3 = on and K.ACCENT or K.BG }):Play()
 		TweenService:Create(knob, info, { Position = on and UDim2.fromOffset(19, 3) or UDim2.fromOffset(3, 3) }):Play()
+	end
+	trackBtn.MouseButton1Click:Connect(function()
+		local on = not getOn()
+		paint(on)
 		onChange(on)
 	end)
+	return paint -- lets other controls move this switch
 end
 local function toggleRow(parent, title, sub, getOn, onChange)
 	local r = row(parent, sub and 40 or 34)
 	txt(r, title, 12, K.LIGHT, Enum.Font.GothamMedium, nil, { Position = UDim2.fromOffset(10, sub and 4 or 8), Size = UDim2.new(1, -62, 0, 16), TextTruncate = Enum.TextTruncate.AtEnd })
 	if sub then txt(r, sub, 10, K.DIM, nil, nil, { Position = UDim2.fromOffset(10, 21), Size = UDim2.new(1, -62, 0, 14), TextTruncate = Enum.TextTruncate.AtEnd }) end
-	switch(r, getOn, onChange)
+	return switch(r, getOn, onChange)
 end
 local function inputBox(parent, w, text, placeholder)
 	local b = mk("TextBox", { Size = UDim2.fromOffset(w, 22), Position = UDim2.new(1, -w - 8, 0.5, -11), BackgroundColor3 = K.BG,
@@ -1463,9 +1474,32 @@ refreshConfigs()
 
 -- TEST
 local testPage = pages["Test"]
-button(testPage, "BUY NEAREST BOOTH ITEM", testBuyNearest, K.ACCENT, 34)
+button(testPage, "BUY NEAREST BOOTH ITEM", function() testBuyNearest(false) end, K.ACCENT, 34)
+local autoNearest = false
+local nearestBtn, paintNearestSwitch
+local function setAutoNearest(on)
+	autoNearest = on and true or false
+	if nearestBtn then
+		nearestBtn.Text = autoNearest and "STOP AUTO BUY NEAREST" or "START AUTO BUY NEAREST"
+		TweenService:Create(nearestBtn, info, { BackgroundColor3 = autoNearest and K.ACCENT_DK or K.ACCENT }):Play()
+	end
+	if paintNearestSwitch then paintNearestSwitch(autoNearest) end
+	testSay(autoNearest and "Auto buy nearest: ON" or "Auto buy nearest: OFF")
+end
+nearestBtn = button(testPage, "START AUTO BUY NEAREST", function() setAutoNearest(not autoNearest) end, K.ACCENT, 34)
+paintNearestSwitch = toggleRow(testPage, "Auto buy nearest", "Keeps buying the nearest item, teleports to the booth if far", function() return autoNearest end, setAutoNearest)
+task.spawn(function()
+	while alive do
+		if autoNearest and Purchase and getState and not testBusy then
+			testBuyNearest(true)
+			task.wait(0.35)
+		else
+			task.wait(0.2)
+		end
+	end
+end)
 button(testPage, "List nearby listings", testListNearby, K.PANEL2, 28)
-note(testPage, "Buys the cheapest listing you can afford at the closest booth. If you're more than 30 studs away it teleports there first. You need to be in the Trading Plaza.", 38)
+note(testPage, "Buys the cheapest listing you can afford at the closest booth. If you're more than 30 studs away it teleports to that booth first. The toggle repeats this nonstop. You need to be in the Trading Plaza, and it works best with the Hop and AFK snipers turned off.", 52)
 sectionLabel(testPage, "LOG")
 local logBox = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = K.PANEL2, BorderSizePixel = 0,
 	LayoutOrder = nextOrder() }, testPage)
