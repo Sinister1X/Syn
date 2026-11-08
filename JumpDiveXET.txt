@@ -11,7 +11,6 @@ local dodgeOn, airJumpOn, noclipOn = true, false, false -- Auto Dodge starts ON
 local speedOn = true -- Speed starts ON
 local range = 9.5 -- studs, adjustable in the GUI
 local rightOnly = true -- only react to brooms on your character's right side
-local leadMs = 0 -- extra lead (ms) on top of ping + frame time; can go negative to dodge later
 local autoRange = true -- range grows with ping / low FPS (Range stepper = base range)
 
 ---------------------------------------------------------------- helpers
@@ -165,7 +164,7 @@ gui.ResetOnSpawn = false
 gui.Parent = (gethui and gethui()) or player:WaitForChild("PlayerGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(210, 346)
+frame.Size = UDim2.fromOffset(210, 312)
 frame.Position = UDim2.new(0.5, -105, 0.12, 0)
 frame.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
 frame.BorderSizePixel = 0
@@ -229,28 +228,25 @@ addToggle("Speed +10%", 132, function(v)
 	if not v then restoreSpeed() end
 end, true)
 
--- steppers (Range = base studs, Lead = extra ms of anticipation)
-local function addStepper(name, y, textFn, change)
-	label(name, UDim2.fromOffset(14, y), UDim2.fromOffset(60, 28), Enum.Font.Gotham, 14, dim, Enum.TextXAlignment.Left)
-	local val = label(textFn(), UDim2.fromOffset(104, y), UDim2.fromOffset(52, 28), Enum.Font.GothamBold, 14, light)
-	local function btn(txt, x, dir)
-		local b = Instance.new("TextButton")
-		b.Size, b.Position = UDim2.fromOffset(28, 28), UDim2.fromOffset(x, y)
-		b.Text, b.Font, b.TextSize = txt, Enum.Font.GothamBold, 16
-		b.TextColor3 = light
-		b.BackgroundColor3 = Color3.fromRGB(45, 45, 56)
-		b.AutoButtonColor, b.BorderSizePixel = true, 0
-		b.Parent = frame
-		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-		b.MouseButton1Click:Connect(function() change(dir); val.Text = textFn() end)
-	end
-	btn("-", 72, -1)
-	btn("+", 162, 1)
+-- range stepper
+label("Range", UDim2.fromOffset(14, 168), UDim2.fromOffset(60, 28), Enum.Font.Gotham, 14, dim, Enum.TextXAlignment.Left)
+local rangeText = label(range .. " st", UDim2.fromOffset(104, 168), UDim2.fromOffset(52, 28), Enum.Font.GothamBold, 14, light)
+local function stepBtn(txt, x, delta)
+	local b = Instance.new("TextButton")
+	b.Size, b.Position = UDim2.fromOffset(28, 28), UDim2.fromOffset(x, 168)
+	b.Text, b.Font, b.TextSize = txt, Enum.Font.GothamBold, 16
+	b.TextColor3 = light
+	b.BackgroundColor3 = Color3.fromRGB(45, 45, 56)
+	b.AutoButtonColor, b.BorderSizePixel = true, 0
+	b.Parent = frame
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+	b.MouseButton1Click:Connect(function()
+		range = math.clamp(range + delta, 4, 25)
+		rangeText.Text = range .. " st"
+	end)
 end
-addStepper("Range", 168, function() return range .. " st" end,
-	function(dir) range = math.clamp(range + dir * 0.5, 4, 25) end)
-addStepper("Lead", 200, function() return leadMs .. " ms" end,
-	function(dir) leadMs = math.clamp(leadMs + dir * 10, -150, 300) end)
+stepBtn("-", 72, -0.5)
+stepBtn("+", 162, 0.5)
 
 -- on/off chips
 local function addChip(y, textFn, getOn, flip)
@@ -271,12 +267,12 @@ local function addChip(y, textFn, getOn, flip)
 	b.MouseButton1Click:Connect(function() flip(); refresh() end)
 	refresh()
 end
-addChip(236, function(on) return "Right side only: " .. (on and "On" or "Off") end,
+addChip(204, function(on) return "Right side only: " .. (on and "On" or "Off") end,
 	function() return rightOnly end, function() rightOnly = not rightOnly end)
-addChip(270, function(on) return "Auto range (ping/FPS): " .. (on and "On" or "Off") end,
+addChip(238, function(on) return "Auto range (ping/FPS): " .. (on and "On" or "Off") end,
 	function() return autoRange end, function() autoRange = not autoRange end)
 
-local readout = label("", UDim2.fromOffset(0, 304), UDim2.new(1, 0, 0, 34), Enum.Font.Gotham, 12, dim)
+local readout = label("", UDim2.fromOffset(0, 272), UDim2.new(1, 0, 0, 34), Enum.Font.Gotham, 12, dim)
 
 -- dragging (mouse + touch)
 local dragging, dragStart, startPos
@@ -303,7 +299,7 @@ local state = {
 	low = { armed = true, last = 0, prev = math.huge, rate = 0, speed = 0 },
 }
 local lastScan, lastUI, lastPing = 0, 0, 0
-local pingMs, pingLast, dtAvg = 0, 0, 1 / 60
+local pingMs, dtAvg = 0, 1 / 60
 
 -- trigger distance for a broom: base range + how far it travels during your total delay
 -- (round-trip ping + ~2 frames), so higher ping / lower FPS makes it dodge earlier
@@ -312,29 +308,17 @@ local function effRange(s, latency)
 	return math.clamp(range + s.speed * latency, 4, 30)
 end
 
--- network "Data Ping" (ms), the same value as the Developer Console > Network tab
-local function getPing()
-	local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-	if ok and type(v) == "number" and v > 0 then return v end
-	ok, v = pcall(function() return Stats.PerformanceStats.Ping:GetValue() end)
-	if ok and type(v) == "number" and v > 0 then return v end
-	ok, v = pcall(function() return player:GetNetworkPing() * 2000 end) -- one-way seconds -> round-trip ms
-	if ok and type(v) == "number" and v > 0 then return v end
-	return nil
-end
-
 RunService.Heartbeat:Connect(function(dt)
 	local now = os.clock()
 	if now - lastScan > 1 then lastScan = now; scan() end
 
 	dtAvg = dtAvg * 0.9 + dt * 0.1
-	if now - lastPing > 0.1 then
+	if now - lastPing > 0.5 then
 		lastPing = now
-		local v = getPing()
-		if v then pingMs, pingLast = v, v end -- raw Data Ping, no smoothing
+		local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+		if ok and v then pingMs = pingMs == 0 and v or pingMs * 0.7 + v * 0.3 end
 	end
-	-- total delay: round-trip Data Ping + ~2 frames + Lead (Lead can be negative)
-	local latency = math.max(pingMs / 1000 + dtAvg * 2 + leadMs / 1000, 0)
+	local latency = pingMs / 1000 + dtAvg * 2
 
 	local char = player.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -347,25 +331,19 @@ RunService.Heartbeat:Connect(function(dt)
 		local function f(d) return d == math.huge and "-" or string.format("%.1f", d) end
 		local sl = state.low
 		readout.Text = "H " .. f(dHigh) .. " | L " .. f(dLow) .. (sl.armed and "  armed" or "  locked")
-			.. string.format("\nRng %.1f | %dms | %dfps | v%d", effRange(sl, latency), math.floor(pingMs), math.floor(1 / dtAvg), math.floor(sl.speed))
+			.. string.format("\nRng %.1f | %dms | %d FPS", effRange(sl, latency), math.floor(pingMs), math.floor(1 / dtAvg))
 	end
 	if not dodgeOn then return end
 
 	-- once per sweep, only for a broom moving toward you
 	local function update(kind, d, action, needsGround)
 		local s = state[kind]
-		if d == math.huge then s.prev, s.prevD, s.rate, s.armed = math.huge, nil, 0, true; return end
+		if d == math.huge then s.prev, s.rate, s.armed = math.huge, 0, true; return end
 		if s.prev ~= math.huge and dt > 0 then
 			s.rate = s.rate * 0.6 + ((d - s.prev) / dt) * 0.4
 		end
 		s.prev = d
-		-- broom speed estimate: updated only while it is closing in, and kept between sweeps
-		-- (the arm turns at a constant speed), so the next sweep starts with a good value
-		local raw = dt > 0 and (s.prevD ~= nil and (d - s.prevD) / dt or 0) or 0
-		s.prevD = d
-		if raw < -1 and raw > -300 then
-			s.speed = s.speed == 0 and -raw or s.speed * 0.9 + (-raw) * 0.1
-		end
+		s.speed = s.speed * 0.9 + math.max(-s.rate, 0) * 0.1 -- smoothed approach speed (studs/sec)
 		local r = effRange(s, latency)
 		if s.armed then
 			if d <= r and s.rate < APPROACH and now - s.last > LOCKOUT
