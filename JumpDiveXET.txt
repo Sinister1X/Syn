@@ -1,282 +1,411 @@
--- Broom Dodge + Air Jump + Noclip (draggable GUI)
+-- Break All Zones (Halloween Games): breaks breakables in EVERY event zone, not just yours.
+-- Uses the same game calls as VyHub (Breakables_JoinPetBulk / Breakables_PlayerDealDamage).
+
+local genv = (type(getgenv) == "function" and getgenv()) or _G
+if type(genv.BreakAllZones) == "table" and type(genv.BreakAllZones.Stop) == "function" then
+	pcall(genv.BreakAllZones.Stop)
+	task.wait(0.2)
+end
+
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
+local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local VIM = game:GetService("VirtualInputManager")
-local Stats = game:GetService("Stats")
-
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
 local player = Players.LocalPlayer
-local dodgeOn, airJumpOn, noclipOn = true, false, false -- Auto Dodge starts ON
-local speedOn = true -- Speed starts ON
-local range = 9.5 -- studs, adjustable in the GUI
-local rightOnly = true -- only react to brooms on your character's right side
-local autoRange = true -- range grows with ping / low FPS (Range stepper = base range)
 
----------------------------------------------------------------- helpers
-local function getHum()
-	local char = player.Character
-	return char and char:FindFirstChildOfClass("Humanoid")
+local INSTANCE_ID = "HalloweenGames"
+local ZONE_COUNT = 8
+local TAPS_PER_STEP = 12
+
+local alive = true
+local conns = {}
+local breakOn, tapOn = false, false
+local zoneOn = {}
+for i = 1, ZONE_COUNT do zoneOn[i] = true end
+local interval = 0.2 -- seconds between sweeps
+
+local stats = { status = "Loading game modules...", targets = 0, pets = 0, broken = 0, taps = 0, perZone = {} }
+
+---------------------------------------------------------------- game access (same approach as the hub)
+local canSetId = type(setthreadidentity) == "function"
+local execId = 7
+if type(getthreadidentity) == "function" then
+	local ok, id = pcall(getthreadidentity)
+	if ok and type(id) == "number" then execId = id end
 end
 
-local function isGrounded()
-	local hum = getHum()
-	if not hum then return false end
-	local st = hum:GetState()
-	return hum.FloorMaterial ~= Enum.Material.Air
-		or st == Enum.HumanoidStateType.Running
-		or st == Enum.HumanoidStateType.RunningNoPhysics
-		or st == Enum.HumanoidStateType.Landed
+local function gcall(fn, ...)
+	if type(fn) ~= "function" then return false, "not a function" end
+	if canSetId then pcall(setthreadidentity, 2) end
+	local r = table.pack(pcall(fn, ...))
+	if canSetId then pcall(setthreadidentity, execId) end
+	return table.unpack(r, 1, r.n)
 end
 
-local function doJump()
-	local hum = getHum()
-	if hum then
-		hum.Jump = true
-		hum:ChangeState(Enum.HumanoidStateType.Jumping)
-	end
-end
-
-local function doDive()
-	VIM:SendKeyEvent(true, Enum.KeyCode.T, false, game)
-	task.wait(0.05)
-	VIM:SendKeyEvent(false, Enum.KeyCode.T, false, game)
-end
-
----------------------------------------------------------------- air jump (every 0.03s while airborne)
-task.spawn(function()
-	while true do
-		task.wait(0.03)
-		if airJumpOn and not isGrounded() then
-			VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game) -- triggers the game's own double jump
-			task.delay(0.01, function() VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
-			local hum = getHum()
-			if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+local function req(path)
+	local ok, mod = gcall(function()
+		local node = RS
+		for seg in string.gmatch(path, "[^%.]+") do
+			node = node:FindFirstChild(seg)
+			if not node then error("missing " .. path) end
 		end
+		return require(node)
+	end)
+	return ok and mod or nil
+end
+
+local Network, PlayerPet, BreakableFrontend
+task.spawn(function()
+	local t0 = os.clock()
+	while alive and os.clock() - t0 < 60 do
+		Network = Network or req("Library.Client.Network")
+		PlayerPet = PlayerPet or req("Library.Client.PlayerPet")
+		BreakableFrontend = BreakableFrontend or req("Library.Client.BreakableFrontend")
+		if Network and PlayerPet then
+			stats.status = "Ready"
+			return
+		end
+		task.wait(1)
 	end
+	if alive and not (Network and PlayerPet) then stats.status = "Could not load game modules" end
 end)
 
----------------------------------------------------------------- speed (+10%, re-applied every 0.07s)
-local SPEED_MULT = 1.1
-local speedBase, speedSet, speedHum
-local function restoreSpeed()
-	if speedHum and speedHum.Parent and speedBase then speedHum.WalkSpeed = speedBase end
-	speedBase, speedSet, speedHum = nil, nil, nil
+local function netFire(name, ...)
+	if type(Network) ~= "table" or type(Network.Fire) ~= "function" then return false, "Network.Fire unavailable" end
+	return gcall(Network.Fire, name, ...)
+end
+local function netUnreliable(name, ...)
+	if type(Network) == "table" and type(Network.UnreliableFire) == "function" then
+		return gcall(Network.UnreliableFire, name, ...)
+	end
+	return false
 end
 
-task.spawn(function()
-	while true do
-		task.wait(0.07)
-		if speedOn then
-			local hum = getHum()
-			if hum then
-				if hum ~= speedHum then speedHum, speedBase, speedSet = hum, nil, nil end -- new character
-				local cur = hum.WalkSpeed
-				-- if the game changed the speed itself, that is the new "regular" speed
-				if speedSet == nil or math.abs(cur - speedSet) > 0.01 then speedBase = cur end
-				speedSet = speedBase * SPEED_MULT
-				hum.WalkSpeed = speedSet
+local function petEuids()
+	if type(PlayerPet) ~= "table" or type(PlayerPet.GetAll) ~= "function" then return {} end
+	local ok, out = gcall(function()
+		local res, unfiltered = {}, {}
+		local all = PlayerPet.GetAll()
+		if type(all) ~= "table" then return res end
+		local belongs = type(PlayerPet.BelongsToLocalPlayer) == "function" and PlayerPet.BelongsToLocalPlayer or nil
+		for _, p in pairs(all) do
+			if type(p) == "table" and p.euid ~= nil then
+				unfiltered[#unfiltered + 1] = p.euid
+				local keep = true
+				if belongs then
+					local okB, r = pcall(belongs, p)
+					if okB and r == false then keep = false end
+				end
+				if keep then res[#res + 1] = p.euid end
+			end
+		end
+		if #res == 0 then return unfiltered end
+		return res
+	end)
+	if ok and type(out) == "table" then return out end
+	return {}
+end
+
+---------------------------------------------------------------- breakables across ALL zones
+local function collect()
+	local list, perZone = {}, {}
+	local things = workspace:FindFirstChild("__THINGS")
+	local folder = things and things:FindFirstChild("Breakables")
+	if not folder then return list, perZone end
+	for _, m in ipairs(folder:GetChildren()) do
+		if m:IsA("Model") and m:GetAttribute("ParentID") == INSTANCE_ID then
+			local uid = m:GetAttribute("BreakableUID")
+			if uid ~= nil then
+				local z = tonumber(string.match(tostring(m:GetAttribute("AreaID")), "^Main_(%d+)$"))
+				perZone[z or 0] = (perZone[z or 0] or 0) + 1
+				if z == nil or zoneOn[z] then list[#list + 1] = { uid = uid, zone = z } end
 			end
 		end
 	end
-end)
-
----------------------------------------------------------------- noclip
-local origCollide = {}
-RunService.Stepped:Connect(function()
-	if not noclipOn then return end
-	local char = player.Character
-	if not char then return end
-	for _, d in ipairs(char:GetDescendants()) do
-		if d:IsA("BasePart") then
-			if origCollide[d] == nil then origCollide[d] = d.CanCollide end
-			d.CanCollide = false
-		end
-	end
-end)
-
-local function restoreCollide()
-	for part, v in pairs(origCollide) do
-		if part.Parent then part.CanCollide = v end
-	end
-	origCollide = {}
+	return list, perZone
 end
 
----------------------------------------------------------------- broom detection
-local ARMS = { high = "HighBroomArm", low = "LowBroomArm" }
-local armParts = { high = {}, low = {} }
-
-local function getSlots()
-	local node = workspace
-	for _, n in ipairs({ "__THINGS", "__INSTANCE_CONTAINER", "Active", "HalloweenGames", "ArenaSlots" }) do
-		node = node and node:FindFirstChild(n)
-	end
-	return node
-end
-
-local function scan()
-	armParts = { high = {}, low = {} }
-	local slots = getSlots()
-	if not slots then return end
-	for _, slot in ipairs(slots:GetChildren()) do
-		local sweep = slot:FindFirstChild("BroomSweep")
-		if sweep then
-			for kind, name in pairs(ARMS) do
-				local arm = sweep:FindFirstChild(name)
-				if arm then
-					if arm:IsA("BasePart") then table.insert(armParts[kind], arm) end
-					for _, d in ipairs(arm:GetDescendants()) do
-						if d:IsA("BasePart") then table.insert(armParts[kind], d) end
-					end
+-- chests first, then weakest; zones are interleaved so every zone gets pets
+local function prioritize(list)
+	local ok, out = gcall(function()
+		local byZone, zkeys = {}, {}
+		local getFn = type(BreakableFrontend) == "table" and BreakableFrontend.Get or nil
+		for _, b in ipairs(list) do
+			local health, class = math.huge, "Normal"
+			if getFn then
+				local okG, info = pcall(getFn, b.uid)
+				if okG and type(info) == "table" then
+					if type(info.health) == "number" then health = info.health
+					elseif type(info.maxHealth) == "number" then health = info.maxHealth end
+					class = tostring(info.class or "Normal")
 				end
 			end
-		end
-	end
-end
-
--- distance from you to the arm's box, ignoring your own height; also returns the closest point
-local function distToPart(p, pos)
-	local flat = Vector3.new(pos.X, p.Position.Y, pos.Z)
-	local lp = p.CFrame:PointToObjectSpace(flat)
-	local h = p.Size / 2
-	local c = Vector3.new(math.clamp(lp.X, -h.X, h.X), math.clamp(lp.Y, -h.Y, h.Y), math.clamp(lp.Z, -h.Z, h.Z))
-	return (lp - c).Magnitude, p.CFrame:PointToWorldSpace(c)
-end
-
-local function nearest(kind, root)
-	local pos = root.Position
-	local best = math.huge
-	for _, p in ipairs(armParts[kind]) do
-		if p.Parent then
-			local d, closest = distToPart(p, pos)
-			if not rightOnly or root.CFrame:PointToObjectSpace(closest).X >= -0.5 then
-				if d < best then best = d end
+			if health > 0 then
+				local z = b.zone or 0
+				if not byZone[z] then byZone[z] = {}; zkeys[#zkeys + 1] = z end
+				table.insert(byZone[z], { uid = b.uid, health = health, chest = class ~= "Normal" })
 			end
 		end
-	end
-	return best
+		table.sort(zkeys)
+		for _, z in ipairs(zkeys) do
+			table.sort(byZone[z], function(a, b)
+				if a.chest ~= b.chest then return a.chest end
+				if a.health ~= b.health then return a.health < b.health end
+				return tostring(a.uid) < tostring(b.uid)
+			end)
+		end
+		local res, i, more = {}, 1, true
+		while more do
+			more = false
+			for _, z in ipairs(zkeys) do
+				local e = byZone[z][i]
+				if e then res[#res + 1] = e; more = true end
+			end
+			i += 1
+		end
+		return res
+	end)
+	return ok and out or {}
 end
+
+local lastAssign, lastSend, dirty, tapCursor = {}, 0, true, 0
+
+local function step()
+	if not (Network and PlayerPet) then return end
+	local list, perZone = collect()
+	stats.perZone = perZone
+	if #list == 0 then
+		stats.targets, stats.status = 0, "No breakables found. Be inside the event world."
+		return
+	end
+	local ordered = prioritize(list)
+	stats.targets = #ordered
+	if #ordered == 0 then stats.status = "Nothing left to break"; return end
+
+	if breakOn then
+		local pets = petEuids()
+		stats.pets = #pets
+		if #pets == 0 then
+			stats.status = "No pets found"
+		else
+			local map, changed = {}, dirty
+			for i, e in ipairs(pets) do
+				local target = ordered[((i - 1) % #ordered) + 1].uid
+				map[e] = target
+				if lastAssign[e] ~= target then changed = true end
+			end
+			lastAssign = map
+			if changed or os.clock() - lastSend > 1 then
+				lastSend, dirty = os.clock(), false
+				local ok, err = netFire("Breakables_JoinPetBulk", map)
+				if not ok then stats.status = "Pet send failed: " .. tostring(err); return end
+			end
+			stats.status = "Breaking " .. #ordered .. " targets"
+		end
+	end
+
+	if tapOn then
+		for _ = 1, math.min(#ordered, TAPS_PER_STEP) do
+			tapCursor = tapCursor % #ordered + 1
+			netUnreliable("Breakables_PlayerDealDamage", ordered[tapCursor].uid)
+			stats.taps += 1
+		end
+		if not breakOn then stats.status = "Tapping " .. #ordered .. " targets" end
+	end
+end
+
+local function track(c) conns[#conns + 1] = c; return c end
+
+-- count what breaks and force a re-aim the moment one does
+do
+	local things = workspace:FindFirstChild("__THINGS")
+	local folder = things and things:FindFirstChild("Breakables")
+	if folder then
+		track(folder.ChildRemoved:Connect(function(m)
+			dirty = true
+			if m:GetAttribute("ParentID") == INSTANCE_ID then stats.broken += 1 end
+		end))
+	end
+end
+
+local acc = 0
+track(RunService.Heartbeat:Connect(function(dt)
+	if not alive then return end
+	acc += dt
+	if acc < interval then return end
+	acc = 0
+	if breakOn or tapOn then
+		local ok, err = pcall(step)
+		if not ok then stats.status = "Error: " .. tostring(err) end
+	else
+		stats.status = "Off"
+	end
+end))
 
 ---------------------------------------------------------------- GUI
+local ACCENT = Color3.fromRGB(255, 140, 40)
+local BG = Color3.fromRGB(22, 22, 28)
+local PANEL = Color3.fromRGB(32, 32, 40)
+local OFF = Color3.fromRGB(58, 58, 72)
+local LIGHT = Color3.fromRGB(238, 238, 246)
+local DIM = Color3.fromRGB(150, 150, 168)
+local info = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
 local gui = Instance.new("ScreenGui")
-gui.Name = "BroomDodgeGui"
+gui.Name = "BreakAllZonesGui"
 gui.ResetOnSpawn = false
-gui.Parent = (gethui and gethui()) or player:WaitForChild("PlayerGui")
+gui.Parent = (type(gethui) == "function" and gethui()) or player:WaitForChild("PlayerGui")
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(210, 312)
-frame.Position = UDim2.new(0.5, -105, 0.12, 0)
-frame.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
-frame.BorderSizePixel = 0
-frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
-local stroke = Instance.new("UIStroke", frame)
-stroke.Color = Color3.fromRGB(60, 60, 75)
-
-local light = Color3.fromRGB(235, 235, 245)
-local dim = Color3.fromRGB(150, 150, 165)
-local green = Color3.fromRGB(70, 200, 120)
-local off = Color3.fromRGB(55, 55, 68)
-local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
-local function label(text, pos, size, font, ts, color, align)
-	local l = Instance.new("TextLabel")
-	l.Position, l.Size = pos, size
-	l.BackgroundTransparency = 1
-	l.Text, l.Font, l.TextSize, l.TextColor3 = text, font, ts, color
-	l.TextXAlignment = align or Enum.TextXAlignment.Center
-	l.Parent = frame
-	return l
+local function new(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props) do o[k] = v end
+	o.Parent = parent
+	return o
+end
+local function round(o, r) new("UICorner", { CornerRadius = UDim.new(0, r) }, o) end
+local function text(parent, str, pos, size, font, ts, color, align)
+	return new("TextLabel", {
+		BackgroundTransparency = 1, Text = str, Position = pos, Size = size, Font = font,
+		TextSize = ts, TextColor3 = color, TextXAlignment = align or Enum.TextXAlignment.Left,
+	}, parent)
 end
 
-label("Broom Dodge", UDim2.new(0, 0, 0, 0), UDim2.new(1, 0, 0, 32), Enum.Font.GothamBold, 14, light)
+local FULL_H, HEAD_H = 372, 44
+local frame = new("Frame", {
+	Size = UDim2.fromOffset(290, FULL_H), Position = UDim2.new(0.5, -145, 0.1, 0),
+	BackgroundColor3 = BG, BorderSizePixel = 0, ClipsDescendants = true,
+}, gui)
+round(frame, 14)
+new("UIStroke", { Color = Color3.fromRGB(62, 62, 78), Thickness = 1 }, frame)
 
--- reusable sliding switch row
-local function addToggle(text, y, onChange, startOn)
-	label(text, UDim2.fromOffset(14, y), UDim2.fromOffset(120, 28), Enum.Font.Gotham, 14, light, Enum.TextXAlignment.Left)
-	local track = Instance.new("TextButton")
-	track.Text, track.AutoButtonColor = "", false
-	track.Size = UDim2.fromOffset(50, 26)
-	track.Position = UDim2.new(1, -64, 0, y + 1)
-	track.BackgroundColor3 = startOn and green or off
-	track.BorderSizePixel = 0
-	track.Parent = frame
-	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
-	local knob = Instance.new("Frame")
-	knob.Size, knob.Position = UDim2.fromOffset(20, 20), startOn and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3)
-	knob.BackgroundColor3 = Color3.fromRGB(240, 240, 245)
-	knob.BorderSizePixel = 0
-	knob.Parent = track
-	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-	local on = startOn == true
+-- header (drag handle)
+local head = new("Frame", { Size = UDim2.new(1, 0, 0, HEAD_H), BackgroundColor3 = PANEL, BorderSizePixel = 0 }, frame)
+round(head, 14)
+new("Frame", { Size = UDim2.new(1, 0, 0, 14), Position = UDim2.new(0, 0, 1, -14), BackgroundColor3 = PANEL, BorderSizePixel = 0 }, head)
+new("Frame", { Size = UDim2.fromOffset(4, 18), Position = UDim2.fromOffset(14, 13), BackgroundColor3 = ACCENT, BorderSizePixel = 0 }, head)
+text(head, "Break All Zones", UDim2.fromOffset(26, 4), UDim2.fromOffset(160, 22), Enum.Font.GothamBold, 15, LIGHT)
+text(head, "Halloween Games", UDim2.fromOffset(26, 22), UDim2.fromOffset(160, 16), Enum.Font.Gotham, 11, DIM)
+
+local function headBtn(symbol, x, cb)
+	local b = new("TextButton", {
+		Size = UDim2.fromOffset(26, 26), Position = UDim2.new(1, x, 0, 9), Text = symbol, Font = Enum.Font.GothamBold,
+		TextSize = 15, TextColor3 = LIGHT, BackgroundColor3 = OFF, AutoButtonColor = true, BorderSizePixel = 0,
+	}, head)
+	round(b, 8)
+	b.MouseButton1Click:Connect(cb)
+	return b
+end
+
+local body = new("Frame", { Position = UDim2.fromOffset(0, HEAD_H), Size = UDim2.new(1, 0, 1, -HEAD_H), BackgroundTransparency = 1 }, frame)
+
+local function addToggle(title, sub, y, cb)
+	local row = new("Frame", { Position = UDim2.fromOffset(12, y), Size = UDim2.new(1, -24, 0, 46), BackgroundColor3 = PANEL, BorderSizePixel = 0 }, body)
+	round(row, 10)
+	text(row, title, UDim2.fromOffset(12, 5), UDim2.new(1, -80, 0, 20), Enum.Font.GothamMedium, 14, LIGHT)
+	text(row, sub, UDim2.fromOffset(12, 24), UDim2.new(1, -80, 0, 16), Enum.Font.Gotham, 11, DIM)
+	local track = new("TextButton", {
+		Text = "", AutoButtonColor = false, Size = UDim2.fromOffset(46, 24), Position = UDim2.new(1, -58, 0.5, -12),
+		BackgroundColor3 = OFF, BorderSizePixel = 0,
+	}, row)
+	round(track, 12)
+	local knob = new("Frame", { Size = UDim2.fromOffset(18, 18), Position = UDim2.fromOffset(3, 3), BackgroundColor3 = Color3.fromRGB(245, 245, 250), BorderSizePixel = 0 }, track)
+	round(knob, 9)
+	local on = false
 	track.MouseButton1Click:Connect(function()
 		on = not on
-		TweenService:Create(track, info, { BackgroundColor3 = on and green or off }):Play()
-		TweenService:Create(knob, info, { Position = on and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3) }):Play()
-		onChange(on)
+		TweenService:Create(track, info, { BackgroundColor3 = on and ACCENT or OFF }):Play()
+		TweenService:Create(knob, info, { Position = on and UDim2.fromOffset(25, 3) or UDim2.fromOffset(3, 3) }):Play()
+		cb(on)
 	end)
 end
 
-addToggle("Auto Dodge", 36, function(v) dodgeOn = v end, true)
-addToggle("Air Jump", 68, function(v) airJumpOn = v end)
-addToggle("Noclip", 100, function(v)
-	noclipOn = v
-	if not v then restoreCollide() end
-end)
-addToggle("Speed +10%", 132, function(v)
-	speedOn = v
-	if not v then restoreSpeed() end
-end, true)
+addToggle("Break all zones", "Pets break every zone at once", 8, function(v) breakOn = v; if v then dirty = true end end)
+addToggle("Tap all", "Also damage every target directly", 60, function(v) tapOn = v end)
 
--- range stepper
-label("Range", UDim2.fromOffset(14, 168), UDim2.fromOffset(60, 28), Enum.Font.Gotham, 14, dim, Enum.TextXAlignment.Left)
-local rangeText = label(range .. " st", UDim2.fromOffset(104, 168), UDim2.fromOffset(52, 28), Enum.Font.GothamBold, 14, light)
-local function stepBtn(txt, x, delta)
-	local b = Instance.new("TextButton")
-	b.Size, b.Position = UDim2.fromOffset(28, 28), UDim2.fromOffset(x, 168)
-	b.Text, b.Font, b.TextSize = txt, Enum.Font.GothamBold, 16
-	b.TextColor3 = light
-	b.BackgroundColor3 = Color3.fromRGB(45, 45, 56)
-	b.AutoButtonColor, b.BorderSizePixel = true, 0
-	b.Parent = frame
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-	b.MouseButton1Click:Connect(function()
-		range = math.clamp(range + delta, 4, 25)
-		rangeText.Text = range .. " st"
-	end)
-end
-stepBtn("-", 72, -0.5)
-stepBtn("+", 162, 0.5)
-
--- on/off chips
-local function addChip(y, textFn, getOn, flip)
-	local b = Instance.new("TextButton")
-	b.Size, b.Position = UDim2.fromOffset(182, 28), UDim2.fromOffset(14, y)
-	b.Font, b.TextSize = Enum.Font.GothamMedium, 13
-	b.AutoButtonColor, b.BorderSizePixel = false, 0
-	b.Parent = frame
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
-	local function refresh()
-		local on = getOn()
-		b.Text = textFn(on)
-		TweenService:Create(b, info, {
-			BackgroundColor3 = on and green or Color3.fromRGB(45, 45, 56),
-			TextColor3 = on and Color3.fromRGB(20, 20, 25) or dim,
+-- zone chips
+text(body, "Zones", UDim2.fromOffset(14, 114), UDim2.fromOffset(80, 18), Enum.Font.GothamMedium, 12, DIM)
+local chipLabels = {}
+for i = 1, ZONE_COUNT do
+	local col, rowI = (i - 1) % 4, math.floor((i - 1) / 4)
+	local chip = new("TextButton", {
+		Size = UDim2.fromOffset(60, 30), Position = UDim2.fromOffset(12 + col * 64.5, 134 + rowI * 36),
+		Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false, BorderSizePixel = 0, BackgroundColor3 = ACCENT,
+		TextColor3 = Color3.fromRGB(22, 22, 28), Text = "Z" .. i,
+	}, body)
+	round(chip, 8)
+	chipLabels[i] = chip
+	chip.MouseButton1Click:Connect(function()
+		zoneOn[i] = not zoneOn[i]
+		dirty = true
+		TweenService:Create(chip, info, {
+			BackgroundColor3 = zoneOn[i] and ACCENT or OFF,
+			TextColor3 = zoneOn[i] and Color3.fromRGB(22, 22, 28) or DIM,
 		}):Play()
-	end
-	b.MouseButton1Click:Connect(function() flip(); refresh() end)
-	refresh()
+	end)
 end
-addChip(204, function(on) return "Right side only: " .. (on and "On" or "Off") end,
-	function() return rightOnly end, function() rightOnly = not rightOnly end)
-addChip(238, function(on) return "Auto range (ping/FPS): " .. (on and "On" or "Off") end,
-	function() return autoRange end, function() autoRange = not autoRange end)
 
-local readout = label("", UDim2.fromOffset(0, 272), UDim2.new(1, 0, 0, 34), Enum.Font.Gotham, 12, dim)
+-- speed stepper
+text(body, "Sweep speed", UDim2.fromOffset(14, 212), UDim2.fromOffset(100, 28), Enum.Font.Gotham, 13, LIGHT)
+local speedVal = text(body, "", UDim2.fromOffset(150, 212), UDim2.fromOffset(60, 28), Enum.Font.GothamBold, 13, LIGHT, Enum.TextXAlignment.Center)
+local function refreshSpeed() speedVal.Text = string.format("%.2fs", interval) end
+refreshSpeed()
+local function stepBtn(sym, x, delta)
+	local b = new("TextButton", {
+		Text = sym, Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = LIGHT, BackgroundColor3 = PANEL,
+		Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(x, 212), AutoButtonColor = true, BorderSizePixel = 0,
+	}, body)
+	round(b, 8)
+	b.MouseButton1Click:Connect(function()
+		interval = math.clamp(math.floor((interval + delta) * 100 + 0.5) / 100, 0.05, 1)
+		refreshSpeed()
+	end)
+end
+stepBtn("-", 118, -0.05)
+stepBtn("+", 214, 0.05)
 
--- dragging (mouse + touch)
+-- live stats panel
+local panel = new("Frame", { Position = UDim2.fromOffset(12, 252), Size = UDim2.new(1, -24, 0, 70), BackgroundColor3 = PANEL, BorderSizePixel = 0 }, body)
+round(panel, 10)
+local statusLbl = text(panel, "", UDim2.fromOffset(12, 6), UDim2.new(1, -24, 0, 18), Enum.Font.GothamMedium, 12, LIGHT)
+local line1 = text(panel, "", UDim2.fromOffset(12, 26), UDim2.new(1, -24, 0, 16), Enum.Font.Gotham, 12, DIM)
+local line2 = text(panel, "", UDim2.fromOffset(12, 44), UDim2.new(1, -24, 0, 16), Enum.Font.Gotham, 12, DIM)
+
+local accUI = 0
+track(RunService.Heartbeat:Connect(function(dt)
+	if not alive then return end
+	accUI += dt
+	if accUI < 0.25 then return end
+	accUI = 0
+	statusLbl.Text = stats.status
+	statusLbl.TextColor3 = (breakOn or tapOn) and ACCENT or LIGHT
+	line1.Text = string.format("Targets %d   |   Pets %d", stats.targets, stats.pets)
+	line2.Text = string.format("Broken %d   |   Taps %d", stats.broken, stats.taps)
+	for i = 1, ZONE_COUNT do
+		local n = stats.perZone[i]
+		chipLabels[i].Text = n and ("Z" .. i .. " · " .. n) or ("Z" .. i)
+	end
+end))
+
+-- minimize / close
+local minimized = false
+headBtn("-", -64, function()
+	minimized = not minimized
+	TweenService:Create(frame, info, { Size = UDim2.fromOffset(290, minimized and HEAD_H or FULL_H) }):Play()
+end)
+
+local function stop()
+	alive = false
+	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+	pcall(function() gui:Destroy() end)
+	genv.BreakAllZones = nil
+end
+headBtn("x", -32, stop)
+genv.BreakAllZones = { Stop = stop }
+
+-- dragging (mouse + touch), from the header
 local dragging, dragStart, startPos
-frame.InputBegan:Connect(function(input)
+head.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 		dragging, dragStart, startPos = true, input.Position, frame.Position
 		input.Changed:Connect(function()
@@ -284,78 +413,9 @@ frame.InputBegan:Connect(function(input)
 		end)
 	end
 end)
-UIS.InputChanged:Connect(function(input)
+track(UIS.InputChanged:Connect(function(input)
 	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 		local d = input.Position - dragStart
 		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
 	end
-end)
-
----------------------------------------------------------------- auto dodge loop
-local LOCKOUT = 0.8 -- min seconds between triggers of the same broom
-local APPROACH = -0.1 -- studs/sec; broom must be closing in faster than this
-local state = {
-	high = { armed = true, last = 0, prev = math.huge, rate = 0, speed = 0 },
-	low = { armed = true, last = 0, prev = math.huge, rate = 0, speed = 0 },
-}
-local lastScan, lastUI, lastPing = 0, 0, 0
-local pingMs, dtAvg = 0, 1 / 60
-
--- trigger distance for a broom: base range + how far it travels during your total delay
--- (round-trip ping + ~2 frames), so higher ping / lower FPS makes it dodge earlier
-local function effRange(s, latency)
-	if not autoRange then return range end
-	return math.clamp(range + s.speed * latency, 4, 30)
-end
-
-RunService.Heartbeat:Connect(function(dt)
-	local now = os.clock()
-	if now - lastScan > 1 then lastScan = now; scan() end
-
-	dtAvg = dtAvg * 0.9 + dt * 0.1
-	if now - lastPing > 0.5 then
-		lastPing = now
-		local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-		if ok and v then pingMs = pingMs == 0 and v or pingMs * 0.7 + v * 0.3 end
-	end
-	local latency = pingMs / 1000 + dtAvg * 2
-
-	local char = player.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-
-	local dHigh, dLow = nearest("high", root), nearest("low", root)
-
-	if now - lastUI > 0.1 then
-		lastUI = now
-		local function f(d) return d == math.huge and "-" or string.format("%.1f", d) end
-		local sl = state.low
-		readout.Text = "H " .. f(dHigh) .. " | L " .. f(dLow) .. (sl.armed and "  armed" or "  locked")
-			.. string.format("\nRng %.1f | %dms | %d FPS", effRange(sl, latency), math.floor(pingMs), math.floor(1 / dtAvg))
-	end
-	if not dodgeOn then return end
-
-	-- once per sweep, only for a broom moving toward you
-	local function update(kind, d, action, needsGround)
-		local s = state[kind]
-		if d == math.huge then s.prev, s.rate, s.armed = math.huge, 0, true; return end
-		if s.prev ~= math.huge and dt > 0 then
-			s.rate = s.rate * 0.6 + ((d - s.prev) / dt) * 0.4
-		end
-		s.prev = d
-		s.speed = s.speed * 0.9 + math.max(-s.rate, 0) * 0.1 -- smoothed approach speed (studs/sec)
-		local r = effRange(s, latency)
-		if s.armed then
-			if d <= r and s.rate < APPROACH and now - s.last > LOCKOUT
-				and (not needsGround or isGrounded()) then
-				s.armed, s.last = false, now
-				action()
-			end
-		elseif d > r + 2 then
-			s.armed = true
-		end
-	end
-
-	update("high", dHigh, function() task.spawn(doDive) end, false)
-	update("low", dLow, doJump, true)
-end)
+end))
