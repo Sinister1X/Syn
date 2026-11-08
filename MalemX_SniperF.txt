@@ -564,6 +564,143 @@ local function hopServer()
 	end)
 end
 
+---------------------------------------------------------------- test tools
+local testBusy = false
+local testSink = function() end
+local function testSay(text)
+	print("[MalemX] " .. text)
+	testSink(text)
+end
+
+local BUY_RANGE = 30 -- studs; further than this and the test button teleports first
+
+local function boothModel(uid)
+	local things = workspace:FindFirstChild("__THINGS")
+	local booths = things and things:FindFirstChild("Booths")
+	if not booths then return nil end
+	for _, b in ipairs(booths:GetChildren()) do
+		if tostring(b:GetAttribute("Owner")) == tostring(uid) then return b end
+	end
+	return nil
+end
+
+-- closest booth (not yours) that has something you can afford; picks its cheapest listing
+local function nearestBooth()
+	local char = LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil, "No character yet." end
+	local best
+	for _, tbl in pairs(boothTables()) do
+		if type(tbl) == "table" then
+			for _, b in pairs(tbl) do
+				if type(b) == "table" and type(b.Listings) == "table" and b.Player and b.Player ~= LocalPlayer then
+					local model = boothModel(b.Player.UserId)
+					if model then
+						local pickKey, pickCost, pickListing
+						for key, listing in pairs(b.Listings) do
+							local cost = tonumber(listing.DiamondCost)
+							if cost and cost > 0 and (not diamondsKnown or cost <= stats.diamonds)
+								and (not pickCost or cost < pickCost) then
+								pickKey, pickCost, pickListing = key, cost, listing
+							end
+						end
+						if pickKey then
+							local dist = (model:GetPivot().Position - root.Position).Magnitude
+							if not best or dist < best.dist then
+								best = { uid = b.Player.UserId, owner = b.Player.Name, dist = dist, key = pickKey, cost = pickCost, listing = pickListing }
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function testBuyNearest()
+	if testBusy then return end
+	testBusy = true
+	task.spawn(function()
+		local ok, err = pcall(function()
+			if not Purchase or not getState then
+				testSay("Not hooked yet. Join the Trading Plaza and wait for it to load.")
+				return
+			end
+			local best, why = nearestBooth()
+			if not best then
+				testSay(why or "No booth with a listing you can afford was found.")
+				return
+			end
+			local c = getInfo(best.listing)
+			local name = c.ok and c.name or "an item"
+			testSay(string.format("Nearest: %s's booth, %d studs away. %s for %s gems.", best.owner, math.floor(best.dist), name, fmt(best.cost)))
+			if best.dist > BUY_RANGE then
+				testSay("Out of range, teleporting...")
+				if not gotoBooth(best.uid) then testSay("Teleport failed, trying the buy anyway.") end
+				task.wait(math.max(cfg.tpDelay, 0.15))
+			else
+				testSay("In range, buying from here.")
+			end
+			local waited, readyAt = 0, best.listing.ReadyTimestamp
+			while readyAt and workspace:GetServerTimeNow() < readyAt and waited < 10 do
+				waited += RunService.Heartbeat:Wait()
+			end
+			for attempt = 1, math.max(cfg.retries, 1) do
+				local s, res = pcall(function() return Purchase:InvokeServer(best.uid, { [best.key] = 1 }, CALLER) end)
+				testSay(string.format("Attempt %d: call %s, server said %s", attempt, s and "went through" or "errored", tostring(res)))
+				if s and res then
+					stats.bought += 1
+					stats.spent += best.cost
+					stats.diamonds -= best.cost
+					stats.last = string.format("%s x1 @ %s", name, fmt(best.cost))
+					testSay("Bought it.")
+					return
+				end
+				RunService.Heartbeat:Wait()
+			end
+			testSay("The server refused every attempt.")
+		end)
+		if not ok then testSay("Error: " .. tostring(err)) end
+		testBusy = false
+	end)
+end
+
+-- shows what the script actually sees on the booths, handy when a rule never matches
+local function testListNearby()
+	local char = LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not (getState and root) then
+		testSay("Not hooked yet. Join the Trading Plaza and wait for it to load.")
+		return
+	end
+	local rows, booths = {}, 0
+	local ok, err = pcall(function()
+		for _, tbl in pairs(boothTables()) do
+			if type(tbl) == "table" then
+				for _, b in pairs(tbl) do
+					if type(b) == "table" and type(b.Listings) == "table" and b.Player and b.Player ~= LocalPlayer then
+						booths += 1
+						local model = boothModel(b.Player.UserId)
+						local dist = model and (model:GetPivot().Position - root.Position).Magnitude or math.huge
+						for _, listing in pairs(b.Listings) do
+							local c = getInfo(listing)
+							if c.ok then
+								rows[#rows + 1] = { dist = dist, text = string.format("%s: %s (%s, tier %s) %s gems, RAP %s",
+									b.Player.Name, c.name, c.class, tostring(c.tier), fmt(tonumber(listing.DiamondCost) or 0), fmt(c.rap)) }
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+	if not ok then testSay("Error: " .. tostring(err)); return end
+	table.sort(rows, function(a, b) return a.dist < b.dist end)
+	testSay(string.format("%d booths, %d listings. Closest:", booths, #rows))
+	for i = 1, math.min(#rows, 8) do testSay(rows[i].text) end
+end
+
 ---------------------------------------------------------------- item catalog from the PS99 API
 local CLASS_COLLECTION = { Pet = "Pets", Egg = "Eggs", Enchant = "Enchants", Charm = "Charms", Potion = "Potions",
 	Ultimate = "Ultimates", Hoverboard = "Hoverboards", Lootbox = "Lootboxes", Box = "Boxes", Seed = "Seeds",
@@ -725,7 +862,7 @@ corner(content, 10)
 mk("UIStroke", { Color = PANEL2, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, content)
 
 local pages, tabBtns = {}, {}
-local TAB_NAMES = { "Hop Sniper", "AFK Sniper", "Configs", "Setup" }
+local TAB_NAMES = { "Hop Sniper", "AFK Sniper", "Configs", "Setup", "Test" }
 local function newPage()
 	local p = mk("ScrollingFrame", { Position = UDim2.fromOffset(6, 6), Size = UDim2.new(1, -12, 1, -12), BackgroundTransparency = 1,
 		BorderSizePixel = 0, ScrollBarThickness = 2, ScrollBarImageColor3 = ACCENT, CanvasSize = UDim2.new(),
@@ -745,7 +882,7 @@ end
 for i, n in ipairs(TAB_NAMES) do
 	pages[n] = newPage()
 	local b = mk("TextButton", { Text = n, Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = DIM, BackgroundColor3 = PANEL2,
-		BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = i }, tabList)
+		BorderSizePixel = 0, AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 28), LayoutOrder = i }, tabList)
 	corner(b, 8)
 	tabBtns[n] = b
 	b.MouseButton1Click:Connect(function() showTab(n) end)
@@ -1322,6 +1459,26 @@ refreshConfigs = function()
 	end
 end
 refreshConfigs()
+
+-- TEST
+local testPage = pages["Test"]
+button(testPage, "BUY NEAREST BOOTH ITEM", testBuyNearest, ACCENT, 34)
+button(testPage, "List nearby listings", testListNearby, PANEL2, 28)
+note(testPage, "Buys the cheapest listing you can afford at the closest booth. If you're more than 30 studs away it teleports there first. You need to be in the Trading Plaza.", 38)
+sectionLabel(testPage, "LOG")
+local logBox = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = PANEL2, BorderSizePixel = 0,
+	LayoutOrder = nextOrder() }, testPage)
+corner(logBox, 8)
+mk("UIPadding", { PaddingTop = UDim.new(0, 7), PaddingBottom = UDim.new(0, 7), PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }, logBox)
+local logLabel = mk("TextLabel", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+	Text = "Nothing yet.", TextColor3 = LIGHT, Font = Enum.Font.Gotham, TextSize = 11, TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, logBox)
+local logLines = {}
+testSink = function(text)
+	table.insert(logLines, text)
+	while #logLines > 12 do table.remove(logLines, 1) end
+	logLabel.Text = table.concat(logLines, "\n")
+end
 
 -- start / stop, only one mode runs at a time
 paintMasters = function()
