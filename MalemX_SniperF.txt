@@ -304,13 +304,18 @@ local function staticOk(r, c)
 	return true
 end
 
+-- "Max price each" and "Or % below RAP": with both filled in, either one is enough
 local function priceOk(r, c, cost)
-	if r.MaxPrice and cost > r.MaxPrice then return false end
-	if r.Profit then
-		if not c.rap or c.rap <= 0 then return false end
-		if (c.rap - cost) / c.rap * 100 < r.Profit then return false end
+	local hasMax, hasProfit = r.MaxPrice ~= nil, r.Profit ~= nil
+	local maxOk = hasMax and cost <= r.MaxPrice
+	local profitOk = false
+	if hasProfit and c.rap and c.rap > 0 then
+		profitOk = (c.rap - cost) / c.rap * 100 >= r.Profit
 	end
-	return true
+	if hasMax and hasProfit then return maxOk or profitOk end
+	if hasMax then return maxOk end
+	if hasProfit then return profitOk end
+	return false
 end
 
 -- static facts about a listing's item, cached once
@@ -694,8 +699,28 @@ local function testListNearby()
 						for _, listing in pairs(b.Listings) do
 							local c = getInfo(listing)
 							if c.ok then
-								rows[#rows + 1] = { dist = dist, text = string.format("%s: %s (%s, tier %s) %s gems, RAP %s",
-									b.Player.Name, c.name, c.class, tostring(c.tier), fmt(tonumber(listing.DiamondCost) or 0), fmt(c.rap)) }
+								local cost = tonumber(listing.DiamondCost) or 0
+								local verdict
+								local cands = candidates(c, activeProfile() or "afk")
+								if #cands == 0 then
+									verdict = "no enabled rule with a price matches this item"
+								else
+									local reasons = {}
+									for _, r in ipairs(cands) do
+										if priceOk(r, c, cost) then reasons = nil break end
+										if r.MaxPrice and cost > r.MaxPrice then reasons[#reasons + 1] = "over max " .. fmt(r.MaxPrice) end
+										if r.Profit then
+											if not c.rap or c.rap <= 0 then
+												reasons[#reasons + 1] = "no RAP known for the % rule"
+											else
+												reasons[#reasons + 1] = string.format("only %.0f%% below RAP, rule needs %s%%", (c.rap - cost) / c.rap * 100, tostring(r.Profit))
+											end
+										end
+									end
+									verdict = reasons and table.concat(reasons, ", ") or "WOULD BUY"
+								end
+								rows[#rows + 1] = { dist = dist, text = string.format("%s: %s (%s, tier %s) %s gems, RAP %s -> %s",
+									b.Player.Name, c.name, c.class, tostring(c.tier), fmt(cost), fmt(c.rap), verdict) }
 							end
 						end
 					end
