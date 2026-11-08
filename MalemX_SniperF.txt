@@ -171,7 +171,7 @@ end
 
 local function hasActiveRules(pname)
 	local prof = cfg.rules[pname]
-	local function live(r) return r.Enabled ~= false and (r.MaxPrice ~= nil or r.Profit ~= nil) end
+	local function live(r) return r.Enabled ~= false and r.MaxPrice ~= nil end
 	for _, r in ipairs(prof.items) do if live(r) then return true end end
 	if cfg.whitelistOnly then return false end
 	for _, r in ipairs(prof.custom) do if live(r) then return true end end
@@ -306,7 +306,7 @@ end
 
 local function staticOk(r, c)
 	if r.Enabled == false then return false end
-	if r.MaxPrice == nil and r.Profit == nil then return false end -- never buy with no price limit
+	if r.MaxPrice == nil then return false end -- never buy with no price limit
 	if r.Tier ~= nil and r.Tier ~= c.tier then return false end
 	if r.Shiny ~= nil and r.Shiny ~= c.sh then return false end
 	local bl = blCache[r]
@@ -314,31 +314,33 @@ local function staticOk(r, c)
 	return true
 end
 
--- "Max price each" and "Or % below RAP": with both filled in, either one is enough
-local function priceOk(r, c, cost)
-	local hasMax, hasProfit = r.MaxPrice ~= nil, r.Profit ~= nil
-	local maxOk = hasMax and cost <= r.MaxPrice
-	local profitOk = false
-	if hasProfit and c.rap and c.rap > 0 then
-		profitOk = (c.rap - cost) / c.rap * 100 >= r.Profit
-	end
-	if hasMax and hasProfit then return maxOk or profitOk end
-	if hasMax then return maxOk end
-	if hasProfit then return profitOk end
-	return false
+-- why a rule that matched the item's name was still skipped (shown in the status line)
+local function staticWhy(r, c)
+	if r.Enabled == false then return "that rule is switched off" end
+	if r.MaxPrice == nil then return "that rule has no max price" end
+	if r.Tier ~= nil and r.Tier ~= c.tier then return string.format("tier is %s, rule wants %s", tostring(c.tier), tostring(r.Tier)) end
+	if r.Shiny ~= nil and r.Shiny ~= c.sh then return "shiny setting does not match" end
+	return "blacklisted"
 end
 
--- static facts about a listing's item, cached once
+-- only the max price decides now
+local function priceOk(r, c, cost)
+	return r.MaxPrice ~= nil and cost <= r.MaxPrice
+end
+
+-- static facts about a listing's item, cached once.
+-- every game call is guarded on its own, so one failing call can no longer make the whole listing invisible
 local infoCache = setmetatable({}, { __mode = "k" })
 local function getInfo(listing)
 	local c = infoCache[listing]
 	if c and (c.ok or os.clock() - (c.t or 0) < 0.5) then return c end
-	c = { ok = false, ver = {}, cands = {}, t = os.clock() }
-	pcall(function()
-		local item = listing.Item
-		local d = item._data or {}
-		c.name = tostring(item:GetName() or "?")
-		c.class = tostring(item.Class and item.Class.Name or "?")
+	c = { ok = false, ver = {}, cands = {}, miss = {}, t = os.clock(), huge = false, titanic = false, garg = false }
+	local item = listing.Item
+	local d = (type(item) == "table" and type(item._data) == "table") and item._data or {}
+	pcall(function() c.name = tostring(item:GetName()) end)
+	if c.name == nil or c.name == "" or c.name == "nil" then c.name = d.id and tostring(d.id) or nil end
+	pcall(function() c.class = tostring(item.Class.Name) end)
+	if c.name and c.class then
 		c.id = d.id
 		c.sh = d.sh == true
 		c.tier = (c.class == "Pet") and (d.pt or 0) or (d.tn or 0)
@@ -348,14 +350,12 @@ local function getInfo(listing)
 			c.base = base
 			if n and d.tn == nil then c.tier = n end
 		end
-		c.rap = tonumber(item:GetRAP()) or 0
-		c.huge = item.IsHuge and item:IsHuge() or false
-		c.titanic = item.IsTitanic and item:IsTitanic() or false
-		c.garg = item.IsGargantuan and item:IsGargantuan() or false
-		local okR, rar = pcall(function() return item:GetRarity()._id end)
-		c.rarity = okR and rar or nil
+		pcall(function() c.huge = (item.IsHuge and item:IsHuge()) and true or false end)
+		pcall(function() c.titanic = (item.IsTitanic and item:IsTitanic()) and true or false end)
+		pcall(function() c.garg = (item.IsGargantuan and item:IsGargantuan()) and true or false end)
+		pcall(function() c.rarity = item:GetRarity()._id end)
 		c.ok = true
-	end)
+	end
 	infoCache[listing] = c
 	return c
 end
@@ -364,6 +364,7 @@ local function candidates(c, pname)
 	if c.ver[pname] == cfgVersion then return c.cands[pname] end
 	local idx = index[pname]
 	local list = {}
+	local why = nil
 	local cl = c.class:lower()
 	local byName = idx.byClassName[cl]
 	if byName then
@@ -374,7 +375,7 @@ local function candidates(c, pname)
 		end
 		for _, k in ipairs(keys) do
 			for _, r in ipairs(byName[k] or {}) do
-				if staticOk(r, c) then list[#list + 1] = r end
+				if staticOk(r, c) then list[#list + 1] = r else why = why or staticWhy(r, c) end
 			end
 		end
 	end
@@ -385,11 +386,12 @@ local function candidates(c, pname)
 		if staticOk(r, c) then list[#list + 1] = r end
 	end
 	c.ver[pname], c.cands[pname] = cfgVersion, list
+	c.miss[pname] = (#list == 0) and why or nil
 	return list
 end
 
 ---------------------------------------------------------------- game access
-local stats = { scanned = 0, matches = 0, bought = 0, spent = 0, profit = 0, last = "-", status = "Idle", diamonds = 0 }
+local stats = { scanned = 0, matches = 0, bought = 0, spent = 0, last = "-", status = "Idle", diamonds = 0 }
 local queue, handled, busy = {}, {}, false
 local diamondsKnown = false
 if autoLoadedName then stats.last = "Auto loaded " .. autoLoadedName end
@@ -450,8 +452,7 @@ local function sendWebhook(job)
 		Url = cfg.webhookUrl, Method = "POST", Headers = { ["Content-Type"] = "application/json" },
 		Body = HttpService:JSONEncode({ username = "MalemX Sniper", embeds = { {
 			title = "Sniped an item",
-			description = string.format("**%s** x%d\nPaid `%s` each\nRAP `%s`\nProfit `%s`", job.name, job.qty,
-				fmt(job.cost), fmt(job.rap), fmt((job.rap - job.cost) * job.qty)),
+			description = string.format("**%s** x%d\nPaid `%s` each", job.name, job.qty, fmt(job.cost)),
 			color = 14033460,
 		} } }),
 	})
@@ -476,7 +477,6 @@ local function runJob(job)
 	if ok then
 		stats.bought += job.qty
 		stats.spent += job.cost * job.qty
-		stats.profit += (job.rap - job.cost) * job.qty
 		stats.diamonds -= job.cost * job.qty
 		stats.last = string.format("%s x%d @ %s", job.name, job.qty, fmt(job.cost))
 		task.spawn(sendWebhook, job)
@@ -489,7 +489,11 @@ end
 task.spawn(function() -- one buy at a time, as fast as frames allow
 	while alive do
 		if #queue > 0 and not busy then
-			runJob(table.remove(queue, 1))
+			local okJob, errJob = pcall(runJob, table.remove(queue, 1))
+			if not okJob then
+				busy = false
+				stats.status = "Buy error: " .. tostring(errJob)
+			end
 		else
 			RunService.Heartbeat:Wait()
 		end
@@ -499,6 +503,7 @@ end)
 local function scan(pname)
 	local seen, matched = 0, 0
 	local me = LocalPlayer
+	local missNote, missCost, affordNote
 	for _, tbl in pairs(boothTables()) do
 		if type(tbl) == "table" then
 			for _, b in pairs(tbl) do
@@ -506,42 +511,55 @@ local function scan(pname)
 					local uid = b.Player.UserId
 					for key, listing in pairs(b.Listings) do
 						seen += 1
-						local c = getInfo(listing)
-						if c.ok then
+						local okL, errL = pcall(function()
+							local c = getInfo(listing)
+							if not c.ok then return end
+							local cost = tonumber(listing.DiamondCost)
+							if not cost or cost <= 0 then return end
 							local cands = candidates(c, pname)
-							if #cands > 0 then
-								local cost = tonumber(listing.DiamondCost)
-								if cost and cost > 0 then
-									for _, r in ipairs(cands) do
-										if priceOk(r, c, cost) then
-											matched += 1
-											local id = uid .. ":" .. tostring(key)
-											local t0 = handled[id]
-											if not t0 or os.clock() - t0 > 2 then
-												local amount = (listing.Item._data and listing.Item._data._am) or 1
-												local afford = diamondsKnown and math.floor((stats.diamonds - cfg.minGems) / cost) or math.huge
-												local qty = math.min(amount, afford, cfg.maxPerBuy)
-												if qty >= 1 then
-													handled[id] = os.clock()
-													table.insert(queue, { uid = uid, key = key, qty = qty, cost = cost, rap = c.rap,
-														name = c.name, id = id, ready = listing.ReadyTimestamp })
-													stats.note = nil
-												else
-													stats.note = string.format("Can't afford %s: you have %s gems, keeping %s", c.name, fmt(stats.diamonds), fmt(cfg.minGems))
-												end
-											end
-											break
-										end
-									end
+							if #cands == 0 then
+								local why = c.miss and c.miss[pname]
+								if why and (not missCost or cost < missCost) then
+									missCost = cost
+									missNote = string.format("%s (%s gems, %s) skipped: %s", c.name, fmt(cost), b.Player.Name, why)
+								end
+								return
+							end
+							local hit
+							for _, r in ipairs(cands) do
+								if priceOk(r, c, cost) then hit = r; break end
+							end
+							if not hit then
+								if not missCost or cost < missCost then
+									missCost = cost
+									missNote = string.format("%s is %s gems, your max is %s", c.name, fmt(cost), fmt(cands[1].MaxPrice or 0))
+								end
+								return
+							end
+							matched += 1
+							local id = uid .. ":" .. tostring(key)
+							local t0 = handled[id]
+							if not t0 or os.clock() - t0 > 2 then
+								local amount = (type(listing.Item._data) == "table" and listing.Item._data._am) or 1
+								local afford = diamondsKnown and math.floor((stats.diamonds - cfg.minGems) / cost) or math.huge
+								local qty = math.min(amount, afford, cfg.maxPerBuy)
+								if qty >= 1 then
+									handled[id] = os.clock()
+									table.insert(queue, { uid = uid, key = key, qty = qty, cost = cost,
+										name = c.name, id = id, ready = listing.ReadyTimestamp })
+								else
+									affordNote = string.format("Can't afford %s: you have %s gems, keeping %s (Setup > Gems to keep)", c.name, fmt(stats.diamonds), fmt(cfg.minGems))
 								end
 							end
-						end
+						end)
+						if not okL then stats.status = "Scan error: " .. tostring(errL) end
 					end
 				end
 			end
 		end
 	end
 	stats.scanned, stats.matches = seen, matched
+	stats.note = affordNote or missNote
 end
 
 ---------------------------------------------------------------- server hop (Hop Sniper only)
@@ -713,24 +731,17 @@ local function testListNearby()
 								local verdict
 								local cands = candidates(c, activeProfile() or "afk")
 								if #cands == 0 then
-									verdict = "no enabled rule with a price matches this item"
+									verdict = (c.miss and c.miss[activeProfile() or "afk"]) and ("skipped: " .. c.miss[activeProfile() or "afk"]) or "no enabled rule with a price matches this item"
 								else
 									local reasons = {}
 									for _, r in ipairs(cands) do
 										if priceOk(r, c, cost) then reasons = nil break end
 										if r.MaxPrice and cost > r.MaxPrice then reasons[#reasons + 1] = "over max " .. fmt(r.MaxPrice) end
-										if r.Profit then
-											if not c.rap or c.rap <= 0 then
-												reasons[#reasons + 1] = "no RAP known for the % rule"
-											else
-												reasons[#reasons + 1] = string.format("only %.0f%% below RAP, rule needs %s%%", (c.rap - cost) / c.rap * 100, tostring(r.Profit))
-											end
-										end
 									end
 									verdict = reasons and table.concat(reasons, ", ") or "WOULD BUY"
 								end
-								rows[#rows + 1] = { dist = dist, text = string.format("%s: %s (%s, tier %s) %s gems, RAP %s -> %s",
-									b.Player.Name, c.name, c.class, tostring(c.tier), fmt(cost), fmt(c.rap), verdict) }
+								rows[#rows + 1] = { dist = dist, text = string.format("%s: %s (%s, tier %s) %s gems -> %s",
+									b.Player.Name, c.name, c.class, tostring(c.tier), fmt(cost), verdict) }
 							end
 						end
 					end
@@ -1021,8 +1032,7 @@ local function summary(r)
 	if r.Tier ~= nil and not (r.Item and K.TIER_MAX[r.Class]) then parts[#parts + 1] = "tier " .. tostring(r.Tier) end
 	if r.Shiny ~= nil then parts[#parts + 1] = r.Shiny and "shiny" or "non-shiny" end
 	if r.MaxPrice then parts[#parts + 1] = "max " .. fmt(r.MaxPrice) end
-	if r.Profit then parts[#parts + 1] = r.Profit .. "% off RAP" end
-	if not r.MaxPrice and not r.Profit then parts[#parts + 1] = "tap to set a price" end
+	if not r.MaxPrice then parts[#parts + 1] = "tap to set a price" end
 	return table.concat(parts, " · ")
 end
 
@@ -1101,7 +1111,6 @@ local function openEditor(pname, rule, kind, isNew, title)
 	local shinySel = shinyIdx(rule.Shiny)
 	fieldCycle(grid, "Shiny (pets)", K.SHINY_OPTS, shinySel, function(i) shinySel = i end)
 	local priceBox = fieldBox(grid, "Max price each", rule.MaxPrice and fmt(rule.MaxPrice) or "", "e.g. 10k")
-	local profitBox = fieldBox(grid, "Or % below RAP", rule.Profit and tostring(rule.Profit) or "", "none")
 	local blBox
 	if kind ~= "item" then
 		blBox = fieldBox(sheet, "Skip these names (comma separated)", rule.Blacklist or "", "name, name")
@@ -1115,13 +1124,13 @@ local function openEditor(pname, rule, kind, isNew, title)
 			newName = nameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
 			if newName == "" then msg.Text = "Enter an item name."; return end
 		end
-		local maxPrice, profit = parseNum(priceBox.Text), tonumber(profitBox.Text)
-		if not maxPrice and not profit then msg.Text = "Set a max price or a % below RAP."; return end
-		local hadPrice = rule.MaxPrice or rule.Profit
+		local maxPrice = parseNum(priceBox.Text)
+		if not maxPrice then msg.Text = "Set a max price."; return end
+		local hadPrice = rule.MaxPrice
 		if newName then rule.Item = newName end
 		rule.Tier = tonumber(tierBox.Text)
 		rule.Shiny = (shinySel == 2 and true) or (shinySel == 3 and false) or nil
-		rule.MaxPrice, rule.Profit = maxPrice, profit
+		rule.MaxPrice, rule.Profit = maxPrice, nil
 		if blBox then rule.Blacklist = blBox.Text end
 		if rule.Enabled == nil or (kind == "extra" and not hadPrice) then rule.Enabled = true end
 		if isNew then
@@ -1297,7 +1306,7 @@ local function statCard(page)
 	left.LineHeight, right.LineHeight = 1.15, 1.15
 	statViews[#statViews + 1] = function()
 		left.Text = string.format("Gems  %s\nScanned  %d\nMatches  %d", fmt(stats.diamonds), stats.scanned, stats.matches)
-		right.Text = string.format("Bought  %d\nSpent  %s\nProfit  %s", stats.bought, fmt(stats.spent), fmt(stats.profit))
+		right.Text = string.format("Bought  %d\nSpent  %s", stats.bought, fmt(stats.spent))
 		last.Text = stats.warn or stats.note or ("Last  " .. stats.last)
 	end
 end
