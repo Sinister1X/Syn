@@ -15,7 +15,7 @@ _G.ZapHubSettings = {
 	["CombineHalloweenPets"] = {Enable = true, Pets = {"Huge Bat Hoodie Bunny", "Huge Witch Fox", "Huge Thorn Dragon", "Titanic Masquerade Agony", "Gargantuan Butler Penguin"}}, -- Pets = the crafts to start in the Combine-o-Matic, the game chooses which pets it uses (any variant), finished crafts are always claimed
 	["JoinHalloweenGames"] = {Enable = true, MinimumPlayers = 14, MaximumTime = 3},
 	["SwitchGamesWorld"] = {Enable = false, GamesHours = 2, WorldMinutes = 15}, -- Plays Halloween Games for GamesHours (1-4), then goes to the normal world for WorldMinutes (5-60) and repeats
-	["PlayHalloweenGames"] = {Enable = true, BumperMode = "Defensive and Offensive", WalkSpeedBoost = 10}, -- BumperMode = "Defensive"/"Defensive and Offensive"/"Offensive". WalkSpeedBoost = 0-50 (%)
+	["PlayHalloweenGames"] = {Enable = true, BumperMode = "Defensive and Offensive", WalkSpeedBoost = 25}, -- BumperMode = "Defensive"/"Defensive and Offensive"/"Offensive". WalkSpeedBoost = 0-50 (%)
 	["UseHalloweenTricks"] = {Enable = true,
 		Tricks = { -- Tricks = "Broomstick"/"Flashlight"/"Lucky Charm"/"Treat Magnet"
 			BroomSweep = {},
